@@ -2,6 +2,7 @@ package com.yuyan.imemodule.service
 
 import android.content.res.Configuration
 import android.inputmethodservice.InputMethodService
+import android.os.Build
 import android.os.SystemClock
 import android.text.InputType
 import android.view.KeyCharacterMap
@@ -199,6 +200,7 @@ class ImeService : InputMethodService() {
     override fun onWindowShown() {
         mInputView.onWindowShown()
         super.onWindowShown()
+        hideSystemImeSwitchButton()
     }
 
     override fun onWindowHidden() {
@@ -312,6 +314,44 @@ class ImeService : InputMethodService() {
 
     fun updateCandidatesViewShown(shown: Boolean) {
         setCandidatesViewShown(shown)
+    }
+
+    /**
+     * Android 13 起，系统会在输入法窗口底部自绘一条导航栏（NavigationBarFrame），
+     * 左端是系统的输入法切换（地球）按钮，右端是收起键盘按钮。
+     * 语燕的输入法切换统一由设置里的「全面屏键盘优化」提供，这里把系统那个切换按钮隐藏掉，
+     * 避免出现两个切换入口（收起键盘按钮保留，不影响返回）。
+     */
+    private fun hideSystemImeSwitchButton() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val decor = window?.window?.decorView as? ViewGroup ?: return
+        val hide: () -> Unit = {
+            val switcherId = resources.getIdentifier("ime_switch_button", "id", "android")
+            val switcher = if (switcherId != 0) decor.findViewById<View>(switcherId) else null
+            if (switcher != null) {
+                switcher.visibility = View.INVISIBLE
+            } else {
+                // 个别机型按钮 id 不同，退化成整条系统导航栏隐藏
+                findSystemNavigationBarFrame(decor)?.visibility = View.INVISIBLE
+            }
+        }
+        decor.post { hide() }
+        decor.postDelayed({ hide() }, 120) // 个别机型要等首帧布局后才插入系统导航栏
+    }
+
+    private fun findSystemNavigationBarFrame(view: View): View? {
+        if (view.javaClass.simpleName == NAVIGATION_BAR_FRAME_CLASS_NAME) return view
+        if (view is ViewGroup) {
+            for (index in 0 until view.childCount) {
+                findSystemNavigationBarFrame(view.getChildAt(index))?.let { return it }
+            }
+        }
+        return null
+    }
+
+    companion object {
+        // 系统在输入法窗口里自绘的导航栏容器类名（android.inputmethodservice.navigationbar.NavigationBarFrame）
+        private const val NAVIGATION_BAR_FRAME_CLASS_NAME = "NavigationBarFrame"
     }
 
 }
