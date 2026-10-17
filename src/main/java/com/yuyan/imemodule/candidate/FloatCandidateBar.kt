@@ -100,7 +100,7 @@ class FloatCandidateBar(context: Context?, attrs: AttributeSet?) : RelativeLayou
      */
     fun showCandidates() {
         mComposingView.text = DictDecoder.composingStrForDisplay
-        if (DictDecoder.isCandidatesEmpty) {
+        if (DictDecoder.isCandidatesEmpty && !DictDecoder.isComposing) {
             this.visibility = GONE
         } else {
             if (DictDecoder.candidateSize > DictDecoder.activeCandidateBar) mRVCandidates.layoutManager?.scrollToPosition(DictDecoder.activeCandidateBar)

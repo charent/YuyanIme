@@ -123,11 +123,21 @@ class CandidateView(context: Context, private val service: ImeService) : IKeyboa
     private fun processFunctionKeys(event: KeyEvent): Boolean {
         return when (val keyCode = event.keyCode) {
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_SPACE -> {
-                if (DictDecoder.isCandidatesEmpty || (DictDecoder.isAssociate && !mSkbCandidatesBarView.isActiveCand())) {
-                    sendKeyEvent(keyCode)
-                    resetToIdleState()
-                } else {
-                    chooseAndUpdate()
+                when {
+                    DictDecoder.isAssociate && !mSkbCandidatesBarView.isActiveCand() -> {
+                        sendKeyEvent(keyCode)
+                        resetToIdleState()
+                    }
+                    !DictDecoder.isCandidatesEmpty -> chooseAndUpdate()
+                    // 有编码但没候选（i / u / v 这类）：按编码上屏
+                    DictDecoder.isComposing -> {
+                        commitDecInfoText(DictDecoder.composingStrForCommit)
+                        resetToIdleState()
+                    }
+                    else -> {
+                        sendKeyEvent(keyCode)
+                        resetToIdleState()
+                    }
                 }
                 if(keyCode == KeyEvent.KEYCODE_SPACE && event.isCtrlPressed ){
                     InputModeSwitcher.switchModeForUserKey(InputModeSwitcher.USER_KEYCODE_LANG)
@@ -141,8 +151,11 @@ class CandidateView(context: Context, private val service: ImeService) : IKeyboa
                 true
             }
             KeyEvent.KEYCODE_ENTER -> {
-                if (DictDecoder.isCandidatesEmpty || DictDecoder.isAssociate) sendKeyEvent(keyCode)
-                else commitDecInfoText(DictDecoder.composingStrForCommit)
+                if ((DictDecoder.isCandidatesEmpty && !DictDecoder.isComposing) || DictDecoder.isAssociate) {
+                    sendKeyEvent(keyCode)
+                } else {
+                    commitDecInfoText(DictDecoder.composingStrForCommit)
+                }
                 resetToIdleState()
                 true
             }
@@ -164,7 +177,7 @@ class CandidateView(context: Context, private val service: ImeService) : IKeyboa
         val label = keyChar.toChar().toString()
         return when {
             keyCode == KeyEvent.KEYCODE_DEL -> {
-                if (DictDecoder.isCandidatesEmpty || DictDecoder.isAssociate) {
+                if ((DictDecoder.isCandidatesEmpty && !DictDecoder.isComposing) || DictDecoder.isAssociate) {
                     sendKeyEvent(keyCode)
                 } else {
                     if(!InputDispatcher.isFinish){
@@ -207,7 +220,7 @@ class CandidateView(context: Context, private val service: ImeService) : IKeyboa
 
     private fun updateCandidate() {
         DictDecoder.updateDecodingCandidate()
-        if (DictDecoder.isCandidatesEmpty) resetToIdleState()
+        if (DictDecoder.isCandidatesEmpty && !DictDecoder.isComposing) resetToIdleState()
     }
 
     inner class ChoiceNotifier internal constructor() : CandidateViewListener {

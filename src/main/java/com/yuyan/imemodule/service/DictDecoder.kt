@@ -71,16 +71,22 @@ object DictDecoder {
         get() = RimeEngine.showComposition
 
     val composingStrForCommit: String   // 获取输入的拼音字符串
-        get() = RimeEngine.showComposition.replace("'", "").ifEmpty { getCandidate(0)?.text?:""}
+        get() = RimeEngine.showComposition.replace("'", "")
+            .ifEmpty { RimeEngine.compositionText }        // 有编码但没候选时（i/u/v）也要能按编码上屏
+            .ifEmpty { getCandidate(0)?.text ?: "" }
+
+    /**
+     * 引擎是否仍在组合态。与 [isCandidatesEmpty] 不同：
+     * i / u / v 这类编码会出现"有编码、没候选"，此时不能当成"没在输入"把组合串清掉。
+     */
+    val isComposing: Boolean
+        get() = RimeEngine.hasComposition
 
     val nextPageCandidates: Int   // 获取下一页的候选词
         get() {
-            val cands = RimeEngine.getNextPageCandidates()
-            if (cands.isNotEmpty()) {
-                candidatesLiveData.postValue(candidatesLiveData.value?.plus(cands))
-                return cands.size
-            }
-            return 0
+            val fresh = RimeEngine.appendNextPage()
+            if (fresh > 0) candidatesLiveData.postValue(RimeEngine.showCandidates)
+            return fresh
         }
 
     /**

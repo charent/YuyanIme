@@ -408,16 +408,30 @@ class InputView(context: Context, private val service: ImeService) : IKeyboardVi
     private fun processFunctionKey(event: KeyEvent) {
         when (val keyCode = event.keyCode) {
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_SPACE -> {
-                if (DictDecoder.isCandidatesEmpty || DictDecoder.isAssociate) {
-                    sendKeyEvent(keyCode)
-                    resetToIdleState()
+                when {
+                    DictDecoder.isAssociate -> {
+                        sendKeyEvent(keyCode)
+                        resetToIdleState()
+                    }
+                    !DictDecoder.isCandidatesEmpty -> chooseAndUpdate()
+                    // 有编码但没候选（i / u / v 这类）：像回车一样把编码上屏，别让编码被空格吃掉
+                    DictDecoder.isComposing -> {
+                        commitDecInfoText(DictDecoder.composingStrForCommit)
+                        resetToIdleState()
+                    }
+                    else -> {
+                        sendKeyEvent(keyCode)
+                        resetToIdleState()
+                    }
                 }
-                else chooseAndUpdate()
             }
             KeyEvent.KEYCODE_CLEAR -> resetToIdleState()
             KeyEvent.KEYCODE_ENTER -> {
-                if (DictDecoder.isCandidatesEmpty || DictDecoder.isAssociate) sendKeyEvent(keyCode)
-                else commitDecInfoText(DictDecoder.composingStrForCommit)
+                if ((DictDecoder.isCandidatesEmpty && !DictDecoder.isComposing) || DictDecoder.isAssociate) {
+                    sendKeyEvent(keyCode)
+                } else {
+                    commitDecInfoText(DictDecoder.composingStrForCommit)
+                }
                 resetToIdleState()
             }
             KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT -> {
@@ -482,7 +496,7 @@ class InputView(context: Context, private val service: ImeService) : IKeyboardVi
 
         return when {
             keyCode == KeyEvent.KEYCODE_DEL -> {
-                if (DictDecoder.isCandidatesEmpty || DictDecoder.isAssociate) {
+                if ((DictDecoder.isCandidatesEmpty && !DictDecoder.isComposing) || DictDecoder.isAssociate) {
                     service.getTextBeforeCursor(1).takeIf { it.isNotEmpty() }?.let { textBeforeCursors.push(it) }
                     sendKeyEvent(keyCode)
                 } else {
@@ -499,12 +513,19 @@ class InputView(context: Context, private val service: ImeService) : IKeyboardVi
             }
             keyCode != 0 -> {
                 if (!DictDecoder.isCandidatesEmpty && !DictDecoder.isAssociate) chooseAndUpdate()
+                else if (DictDecoder.isComposing && !DictDecoder.isAssociate) {
+                    // 有编码没候选（i/u/v）：先把编码上屏，再把按键交给宿主
+                    commitDecInfoText(DictDecoder.composingStrForCommit)
+                }
                 sendKeyEvent(keyCode)
                 resetToIdleState()
                 true
             }
             label.isNotEmpty() -> {
                 if (!DictDecoder.isCandidatesEmpty && !DictDecoder.isAssociate) chooseAndUpdate()
+                else if (DictDecoder.isComposing && !DictDecoder.isAssociate) {
+                    commitDecInfoText(DictDecoder.composingStrForCommit)
+                }
                 if (SymbolPreset.containsKey(label)) commitPairSymbol(label) else commitText(label)
                 true
             }
@@ -542,7 +563,7 @@ class InputView(context: Context, private val service: ImeService) : IKeyboardVi
 
     private fun updateCandidate() {
         DictDecoder.updateDecodingCandidate()
-        if (!DictDecoder.isCandidatesEmpty) {
+        if (!DictDecoder.isCandidatesEmpty || DictDecoder.isComposing) {
             (KeyboardManager.instance.currentContainer as? T9TextContainer)?.updateSymbolListView()
         } else {
             resetToIdleState()

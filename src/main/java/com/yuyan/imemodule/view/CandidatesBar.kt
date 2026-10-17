@@ -255,7 +255,7 @@ class CandidatesBar(context: Context?, attrs: AttributeSet?) : RelativeLayout(co
     private var pendingMenuJob: Job? = null
     private val serviceScope = MainScope()
     fun scheduleShowCandidates() {
-        if (!DictDecoder.isCandidatesEmpty) {
+        if (!DictDecoder.isCandidatesEmpty || DictDecoder.isComposing) {
             pendingMenuJob?.cancel()
             pendingMenuJob = null
             showCandidates()
@@ -283,7 +283,7 @@ class CandidatesBar(context: Context?, attrs: AttributeSet?) : RelativeLayout(co
             } else {
                 listOf(menuSkbFunsPreset[SkbMenuMode.AddPhrases]!!, menuSkbFunsPreset[SkbMenuMode.ClipBoard]!!, menuSkbFunsPreset[SkbMenuMode.Phrases]!!, menuSkbFunsPreset[SkbMenuMode.LockClipBoard]!!)
             }
-        } else if (DictDecoder.isCandidatesEmpty) {
+        } else if (DictDecoder.isCandidatesEmpty && !DictDecoder.isComposing) {
             mRightArrowBtn.drawable.setLevel(0)
             showViewVisibility(mCandidatesMenuContainer)
             val mFunItems: MutableList<SkbFunItem> = mutableListOf()
@@ -297,6 +297,7 @@ class CandidatesBar(context: Context?, attrs: AttributeSet?) : RelativeLayout(co
             }
             mCandidatesMenuAdapter.items = mFunItems
         } else {
+            // 候选态；也可能只有编码没有候选（i / u / v 这类），此时只显示上方的拼音
             if (DictDecoder.candidateSize > DictDecoder.activeCandidateBar) mRVCandidates.layoutManager?.scrollToPosition(DictDecoder.activeCandidateBar)
             showViewVisibility(mCandidatesDataContainer)
             mRightArrowBtn.drawable.setLevel(if (DictDecoder.isAssociate) 2 else if (KeyboardManager.instance.currentContainer is CandidatesContainer) 1 else 0)
