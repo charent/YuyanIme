@@ -237,14 +237,14 @@ open class TextKeyboard(context: Context?) : BaseKeyboardView(context){
         val symbolBaseline = if (stackedSymbol) {
             // 按墨迹下沿对齐：@ 等字符低于基线，直接按基线摆放会离字母过近
             mPaint.textSize = smallTextSizeF
-            mPaint.typeface = Typeface.DEFAULT
+            mPaint.typeface = TYPEFACE_REGULAR
             mPaint.getTextBounds(keyLabelSmall, 0, keyLabelSmall.length, mSymbolBounds)
             symbolInkTop + symbolCap - mSymbolBounds.bottom
         } else 0f
 
         if (keyboardSymbol && !TextUtils.isEmpty(keyLabelSmall)) {
             mPaint.color = textColor
-            mPaint.setTypeface(Typeface.DEFAULT)
+            mPaint.setTypeface(TYPEFACE_REGULAR)
             if(skbStyleMode == SkbStyleMode.Samsung)mPaint.alpha = 128
             mPaint.textSize = smallTextSizeF
             val x = when(prefs.skbStyleMode.getValue()){
@@ -258,10 +258,10 @@ open class TextKeyboard(context: Context?) : BaseKeyboardView(context){
             mPaint.alpha = 255
         }
         if (isLangKey) {
-            // 主字（当前语言）大且固定加粗、副字（可切换语言）小且固定常规，与「键盘字母加粗」全局设置解耦
+            // 主字（当前语言）大、副字（可切换语言）小；主字的字重跟随「键盘字母加粗」开关，与其他键帽字母保持一致
             mPaint.color = textColor
-            val mainTypeface = Typeface.DEFAULT_BOLD
-            val subTypeface = Typeface.DEFAULT
+            val mainTypeface = if (keyboardFontBold) TYPEFACE_BOLD else TYPEFACE_MEDIUM
+            val subTypeface = TYPEFACE_REGULAR
             // 主字跟随实际输入语言：中文输入时「中」大，英文输入时「EN」大
             val langIsEnglish = InputModeSwitcher.isEnglish
             val langMain = if (langIsEnglish) LANG_KEY_MAIN_EN else LANG_KEY_MAIN_CN
@@ -318,14 +318,15 @@ open class TextKeyboard(context: Context?) : BaseKeyboardView(context){
             keyIcon.draw(canvas)
         } else if (!TextUtils.isEmpty(keyLabel)) { //Label位于中间
             mPaint.color = textColor
-            mPaint.typeface = if (keyboardFontBold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+            // 系统字体族固定为 sans-serif；不加粗时用 medium 字重，避免常规字重在小屏上显得过细
+            mPaint.typeface = if (keyboardFontBold) TYPEFACE_BOLD else TYPEFACE_MEDIUM
             mPaint.textSize =  keyTextSizeF
             val x = softKey.mLeft + (softKey.width() - mPaint.measureText(keyLabel)) / 2.0f
             canvas.drawText(keyLabel, x, letterBaseline, mPaint)
         }
         if (keyboardMnemonic && !TextUtils.isEmpty(keyMnemonic)) {  //助记符位于中下方
             mPaint.color = textColor
-            mPaint.typeface = Typeface.DEFAULT
+            mPaint.typeface = TYPEFACE_REGULAR
             mPaint.textSize = mNormalKeyTextSizeSmall.toFloat() * 0.7f
             val x = softKey.mLeft + (softKey.width() - mPaint.measureText(keyMnemonic)) / 2.0f
             val y = softKey.mTop + weightHeigth * 3 + weightHeigth / 2.0f
@@ -345,6 +346,12 @@ open class TextKeyboard(context: Context?) : BaseKeyboardView(context){
     }
 
     companion object {
+        // 键帽文字统一走系统字体族（sans-serif），不走机型自定义字体的细字重；
+        // 三者只在字重上做区分，字形来源一致，大小写与中文混排才不会忽粗忽细
+        private val TYPEFACE_REGULAR: Typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+        private val TYPEFACE_MEDIUM: Typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        private val TYPEFACE_BOLD: Typeface = Typeface.create("sans-serif", Typeface.BOLD)
+
         // 字母、数字的视觉高度相对字号的比例，用于把内容在键帽内垂直居中
         private const val CAP_HEIGHT_RATIO = 0.72f
 
