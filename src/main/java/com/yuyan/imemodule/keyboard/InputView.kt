@@ -91,6 +91,18 @@ class InputView(context: Context, private val service: ImeService) : IKeyboardVi
     // 记录删除内容
     private val textBeforeCursors = StringQueue(50)
 
+    // 候选栏间隔变化后重新计算尺寸并请求重新布局，设置页修改后返回键盘即可生效
+    private val candidatesBottomGapListener =
+        ManagedPreference.OnChangeListener<Int> { _, _ ->
+            EnvironmentSingleton.instance.initData()
+            requestInputAreaLayout()
+        }
+
+    private fun requestInputAreaLayout() {
+        mInputKeyboardContainer.requestLayout()
+        mSkbRoot.requestLayout()
+    }
+
     init {
         initNavbarBackground(service)
         mSkbRoot = LayoutInflater.from(context).inflate(R.layout.sdk_skb_container, this, false) as RelativeLayout
@@ -110,6 +122,7 @@ class InputView(context: Context, private val service: ImeService) : IKeyboardVi
             })
         }
         initView(context)
+        appPrefs.keyboardSetting.candidatesBottomGap.registerOnChangeListener(candidatesBottomGapListener)
     }
 
     override fun onCandidateChanged() {
@@ -712,6 +725,10 @@ class InputView(context: Context, private val service: ImeService) : IKeyboardVi
 
     override fun onWindowShown() {
         chinesePrediction = appPrefs.input.chinesePrediction.getValue()
+        // 每次显示都按当前设置重算一次输入区尺寸并刷新布局：
+        // 设置页改动后即使回调没有触发（进程重建、窗口被销毁等），回到键盘也能立刻生效
+        EnvironmentSingleton.instance.initData()
+        requestInputAreaLayout()
     }
 
     override fun onWindowHidden() {
@@ -728,7 +745,7 @@ class InputView(context: Context, private val service: ImeService) : IKeyboardVi
 
     override fun getKeyboardRect(): IntArray {
         val location = intArrayOf(0, 0).also {if(isAddPhrases) mAddPhrasesLayout.getLocationInWindow(it) else mSkbRoot.getLocationInWindow(it) }
-        val height = EnvironmentSingleton.instance.systemNavbarWindowsBottom + EnvironmentSingleton.instance.heightForFullDisplayBar + EnvironmentSingleton.instance.skbHeight + EnvironmentSingleton.instance.heightForCandidatesArea
+        val height = EnvironmentSingleton.instance.systemNavbarWindowsBottom + EnvironmentSingleton.instance.heightForFullDisplayBar + EnvironmentSingleton.instance.skbHeight + EnvironmentSingleton.instance.heightForCandidatesArea + EnvironmentSingleton.instance.candidatesBottomGap
         return intArrayOf(location[0], location[1], EnvironmentSingleton.instance.inputAreaWidth, height)
     }
 

@@ -132,6 +132,16 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
             defaultLabel = R.string.system_default
         )
 
+        // 候选词栏与键盘之间的间隔，避免选词时误触键盘第一行
+        val candidatesBottomGap = int(
+            R.string.candidates_bottom_gap,
+            "candidates_bottom_gap",
+            6,
+            0,
+            24,
+            "dp"
+        )
+
         val keyboardBalloonShow = switch(R.string.keypopup_input_settings, "keyboard_balloon_show_enable", false)
 
         val longPressTimeout = int(

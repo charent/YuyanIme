@@ -25,12 +25,18 @@
             android:id="@+id/candidates_bar"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"/>
+        <!--候选词栏与键盘之间的间隔，高度由设置项决定，避免选词时误触键盘第一行-->
+        <com.yuyan.imemodule.keyboard.CandidatesGapView
+            android:id="@+id/candidates_bottom_gap"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_below="@+id/candidates_bar"/>
         <!--除顶部外的下面其他容器视图，当标点符号视图显示时会遮挡住此视图-->
         <com.yuyan.imemodule.keyboard.container.InputViewParent
             android:id="@+id/skb_input_keyboard_view"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_below="@+id/candidates_bar">
+            android:layout_below="@+id/candidates_bottom_gap">
         </com.yuyan.imemodule.keyboard.container.InputViewParent>
     </RelativeLayout>
     <include

@@ -32,6 +32,7 @@ class EnvironmentSingleton private constructor() {
     var heightForCandidatesArea = 0 // 候选词区域的高度
     var heightForcomposing = 0 // 候选词拼音区域的高度
     var heightForCandidates = 0 // 候选词区域的高度
+    var candidatesBottomGap = 0 // 候选词栏与键盘之间的间隔（避免选词误触键盘）
     var heightForFullDisplayBar = 0 // 智能导航栏高度
     var heightForKeyboardMove = 0 // 悬浮键盘移动条高度
     var keyTextSize = 0 // 正常按键中文本的大小
@@ -80,6 +81,7 @@ class EnvironmentSingleton private constructor() {
                 AppPrefs.getInstance().keyboardSetting.candidateTextSize.getValue() / 100f).toInt()
         heightForCandidates = (heightForcomposing * 1.9).toInt()
         heightForCandidatesArea = (heightForcomposing * 2.9).toInt()
+        candidatesBottomGap = DevicesUtils.dip2px(AppPrefs.getInstance().keyboardSetting.candidatesBottomGap.getValue())
         composingTextSize = DevicesUtils.px2sp (heightForcomposing)
         candidateTextSize = DevicesUtils.px2sp (heightForCandidates)
         heightForFullDisplayBar = (skbHeight * 0.25f).toInt()
@@ -90,7 +92,7 @@ class EnvironmentSingleton private constructor() {
         keyTextSmallSize = (skbHeight * 0.04f * keyboardFontSizeRatio).toInt()
         keyXMargin = (prefs.keyXMargin.getValue() / 1000f * skbWidth).toInt()
         keyYMargin = (prefs.keyYMargin.getValue() / 1000f * skbHeight).toInt()
-        inputAreaHeight = skbHeight + heightForCandidatesArea
+        inputAreaHeight = skbHeight + heightForCandidatesArea + candidatesBottomGap
     }
 
     var keyBoardHeightRatio: Float
