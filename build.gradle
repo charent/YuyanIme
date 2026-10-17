@@ -77,8 +77,11 @@ android {
 
     //第三方库使用java1.8
     compileOptions {
-        sourceCompatibility 17
-        targetCompatibility 17
+        sourceCompatibility 21
+        targetCompatibility 21
+    }
+    kotlinOptions {
+        jvmTarget = '21'
     }
 }
 
