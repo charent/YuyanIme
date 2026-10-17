@@ -19,7 +19,9 @@ import com.yuyan.imemodule.prefs.behavior.HalfWidthSymbolsMode
 import com.yuyan.imemodule.prefs.behavior.SymbolMode
 import com.yuyan.imemodule.singleton.EnvironmentSingleton
 import com.yuyan.imemodule.singleton.EnvironmentSingleton.Companion.instance
+import com.yuyan.imemodule.utils.DevicesUtils
 import com.yuyan.imemodule.utils.StringUtils
+import kotlin.math.min
 
 /**
  * 表情或符号界面适配器
@@ -33,8 +35,12 @@ class SymbolAdapter(context: Context?, val viewType: SymbolMode, private val pag
     companion object {
         /** emoji 表情网格每行列数 */
         const val EMOJI_COLUMN_COUNT = 8
+        /** emoji 表情字号占单元格宽度的比例：列数不变的前提下放大表情，行数随之减少 */
+        const val EMOJI_TEXT_SIZE_RATIO = 0.7f
+        /** emoji 表情网格一屏至少保留的行数，用于限制横屏/悬浮键盘下的表情字号 */
+        const val EMOJI_MIN_ROWS = 5
         /** emoji 表情 item 上下内边距（dp），控制行间距 */
-        const val EMOJI_ITEM_PADDING_DP = 4
+        const val EMOJI_ITEM_PADDING_DP = 2
     }
 
     init {
@@ -88,11 +94,16 @@ class SymbolAdapter(context: Context?, val viewType: SymbolMode, private val pag
                     textView.setPadding(paddingStart, paddingTop, paddingStart, paddingTop)
                     view.setBackgroundResource(R.drawable.shape_emojicon_background)
                 }
-                // emoji 表情网格：固定 8 列，缩小行间距
+                // emoji 表情网格：固定 8 列，表情字号按单元格宽度放大，缩小行间距
                 viewType == SymbolMode.Emojicon -> {
+                    val environment = EnvironmentSingleton.instance
+                    val cellWidth = environment.skbWidth / EMOJI_COLUMN_COUNT
                     (view.layoutParams as FlexboxLayoutManager.LayoutParams).apply {
-                        width = EnvironmentSingleton.instance.skbWidth / EMOJI_COLUMN_COUNT
+                        width = cellWidth
                     }
+                    // 表情字号随屏幕宽度自适应：单元格宽度的 70%，同时限制为至少能显示 EMOJI_MIN_ROWS 行
+                    val emojiSizePx = min(cellWidth * EMOJI_TEXT_SIZE_RATIO, environment.skbHeight / EMOJI_MIN_ROWS.toFloat())
+                    textView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, DevicesUtils.px2dip(emojiSizePx.toInt()))
                     textView.setPadding(0, view.dp(EMOJI_ITEM_PADDING_DP), 0, view.dp(EMOJI_ITEM_PADDING_DP))
                 }
             }
