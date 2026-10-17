@@ -94,8 +94,15 @@ Preferences use a declarative wrapper instead of raw `SharedPreferences`:
 
 ### Persistence
 
-- Room database `ime_db`, version 4, in `database/DataBaseKT.kt`. Entities: `SideSymbol`, `Clipboard`, `UsedSymbol`, `Phrase`, `SkbFun`. Schema changes require a new `Migration` plus a version bump; the DB is built with `allowMainThreadQueries()`.
+- Room database `ime_db`, version 5, in `database/DataBaseKT.kt`. Entities: `SideSymbol`, `Clipboard`, `UsedSymbol`, `Phrase`, `SkbFun`, `UserWord`. Schema changes require a new `Migration` plus a version bump; the DB is built with `allowMainThreadQueries()`.
 - Clipboard content and user phrases are stored in this database; most behavioral settings live in default `SharedPreferences`, synced to device-encrypted storage when the settings screen stops (API 24+).
+
+### User dictionary
+
+- `user_word` (entity `UserWord`, `word`+`code` primary key) holds words the user added or corrected during input. It is separate from `phrase` (常用语) on purpose: phrases are sentence templates shown in the keyboard's phrase panel, user words are only injected as top candidates on an exact code match.
+- `UserDictManager` is the single read/write entry: it keeps an in-memory `code -> words` index (loaded on a background thread by `Launcher`) because `CustomEngine.processPhrase()` runs on every keystroke and would otherwise hit Room on the main thread. All writes must go through it so the index stays in sync.
+- Learning is captured in `RimeEngine.selectCandidate()` / `flushLearning()`: the first selection's `compositionText` is the code, and a record is only written when at least one non-top candidate was chosen (2–6 CJK chars, debounced, capped at 20k entries).
+- Injection reuses the existing `📋` (`RimeEngine.CUSTOM_TAG`) candidate channel, so `customPhraseSize` index-offset logic stays untouched. Management UI: `ui/fragment/UserDictFragment.kt` (settings → 输入法 → 用户词库), text import/export via `utils/UserDictCodec.kt` (TSV).
 
 ### Native engine constraints
 
