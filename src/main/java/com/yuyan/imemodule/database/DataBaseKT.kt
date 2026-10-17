@@ -11,22 +11,29 @@ import com.yuyan.imemodule.database.dao.PhraseDao
 import com.yuyan.imemodule.database.dao.SideSymbolDao
 import com.yuyan.imemodule.database.dao.SkbFunDao
 import com.yuyan.imemodule.database.dao.UsedSymbolDao
+import com.yuyan.imemodule.database.dao.UserWordDao
 import com.yuyan.imemodule.database.entry.Clipboard
 import com.yuyan.imemodule.database.entry.Phrase
 import com.yuyan.imemodule.database.entry.SideSymbol
 import com.yuyan.imemodule.database.entry.SkbFun
 import com.yuyan.imemodule.database.entry.UsedSymbol
+import com.yuyan.imemodule.database.entry.UserWord
 import com.yuyan.imemodule.prefs.behavior.SkbMenuMode
 import com.yuyan.imemodule.utils.thread.ThreadPoolUtils
 
 //@Database(entities = [SideSymbol::class, Clipboard::class, UsedSymbol::class], version = 1, exportSchema = false)
-@Database(entities = [SideSymbol::class, Clipboard::class, UsedSymbol::class, Phrase::class, SkbFun::class], version = 4, exportSchema = false)
+@Database(
+    entities = [SideSymbol::class, Clipboard::class, UsedSymbol::class, Phrase::class, SkbFun::class, UserWord::class],
+    version = 5,
+    exportSchema = false
+)
 abstract class DataBaseKT : RoomDatabase() {
     abstract fun sideSymbolDao(): SideSymbolDao
     abstract fun clipboardDao(): ClipboardDao
     abstract fun usedSymbolDao(): UsedSymbolDao
     abstract fun phraseDao(): PhraseDao
     abstract fun skbFunDao(): SkbFunDao
+    abstract fun userWordDao(): UserWordDao
     companion object {
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -48,11 +55,33 @@ abstract class DataBaseKT : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS user_word (" +
+                        "word TEXT NOT NULL, " +
+                        "code TEXT NOT NULL, " +
+                        "schema TEXT NOT NULL, " +
+                        "source INTEGER NOT NULL, " +
+                        "hits INTEGER NOT NULL, " +
+                        "weight INTEGER NOT NULL, " +
+                        "enabled INTEGER NOT NULL, " +
+                        "createdAt INTEGER NOT NULL, " +
+                        "updatedAt INTEGER NOT NULL, " +
+                        "PRIMARY KEY (word, code))"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_user_word_code ON user_word (code)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_user_word_source ON user_word (source)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_user_word_updatedAt ON user_word (updatedAt)")
+            }
+        }
+
         val instance = Room.databaseBuilder(Launcher.instance.context, DataBaseKT::class.java, "ime_db")
             .allowMainThreadQueries()
             .addMigrations(MIGRATION_1_2)
             .addMigrations(MIGRATION_2_3)
             .addMigrations(MIGRATION_3_4)
+            .addMigrations(MIGRATION_4_5)
             .addCallback(object :Callback(){
                 override fun onCreate(db: SupportSQLiteDatabase) {
                     super.onCreate(db)

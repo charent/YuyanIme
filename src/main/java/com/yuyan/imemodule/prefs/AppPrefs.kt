@@ -118,6 +118,24 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
         val symbolPairInput = switch(
             R.string.symbol_pair_input, "symbol_pair_input_enable", true
         )
+
+        val titleUserDict = category(R.string.user_dict)
+
+        // 自定义词参与候选
+        val userDictEnable = switch(
+            R.string.user_dict_enable,
+            "user_dict_enable",
+            true,
+            summary = R.string.user_dict_enable_summary
+        )
+
+        // 输入时选了非首位候选，自动记入用户词库
+        val userDictAutoLearn = switch(
+            R.string.user_dict_auto_learn,
+            "user_dict_auto_learn",
+            true,
+            summary = R.string.user_dict_auto_learn_summary
+        )
     }
 
     inner class KeyboardSetting : ManagedPreferenceCategory(R.string.setting_ime_keyboard, sharedPreferences) {

@@ -8,6 +8,7 @@ import com.yuyan.imemodule.data.emojicon.YuyanEmojiCompat
 import com.yuyan.imemodule.data.theme.ThemeManager
 import com.yuyan.imemodule.data.theme.ThemeManager.prefs
 import com.yuyan.imemodule.database.DataBaseKT
+import com.yuyan.imemodule.manager.UserDictManager
 import com.yuyan.imemodule.prefs.AppPrefs
 import com.yuyan.imemodule.service.ClipboardHelper
 import com.yuyan.imemodule.service.InputDispatcher
@@ -45,6 +46,7 @@ class Launcher {
                 AppPrefs.getInstance().internal.dataDictVersion.setValue(CustomConstant.CURRENT_RIME_DICT_DATA_VERSIOM)
             }
             InputDispatcher.resetIme()  // 解决词库复制慢，导致先调用初始化问题
+            UserDictManager.load()      // 用户词库载入内存索引，供候选注入高频查询
             YuyanEmojiCompat.init(context)
             //初始化键盘主题
             val isFollowSystemDayNight = prefs.followSystemDayNightTheme.getValue()

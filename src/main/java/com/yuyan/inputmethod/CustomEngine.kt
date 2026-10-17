@@ -1,6 +1,7 @@
 package com.yuyan.inputmethod
 
 import com.yuyan.imemodule.database.DataBaseKT
+import com.yuyan.imemodule.manager.UserDictManager
 import com.yuyan.imemodule.utils.StringUtils
 import com.yuyan.imemodule.utils.TimeUtils
 import com.yuyan.imemodule.libs.expression.ExpressionBuilder
@@ -54,6 +55,10 @@ object CustomEngine {
 
     fun processPhrase(text: String):MutableList<String> {
         val phrases = mutableListOf<String>()
+        // 用户词库：编码整串匹配时排在最前，自己学习/添加的词优先于自带词库
+        if (getInstance().input.userDictEnable.getValue()) {
+            phrases.addAll(UserDictManager.match(text))
+        }
         val chinesePredictionDate = getInstance().input.chinesePredictionDate.getValue()
         if(chinesePredictionDate) {
             phrases.addAll(DataBaseKT.instance.phraseDao().query(text).map { it.content })
@@ -66,6 +71,6 @@ object CustomEngine {
                 phrases.addAll(TimeUtils.getTime())
             }
         }
-        return phrases
+        return phrases.distinct().toMutableList()
     }
 }

@@ -1,11 +1,15 @@
 package com.yuyan.imemodule.ui.fragment
 
+import androidx.navigation.fragment.findNavController
+import androidx.preference.PreferenceScreen
+import com.yuyan.imemodule.R
 import com.yuyan.imemodule.application.CustomConstant
 import com.yuyan.imemodule.manager.InputModeSwitcher
 import com.yuyan.imemodule.prefs.AppPrefs
 import com.yuyan.imemodule.prefs.behavior.DoublePinyinSchemaMode
 import com.yuyan.imemodule.service.InputDispatcher
 import com.yuyan.imemodule.ui.fragment.base.ManagedPreferenceFragment
+import com.yuyan.imemodule.utils.addPreference
 import com.yuyan.imemodule.view.preference.ManagedPreference
 
 class InputSettingsFragment: ManagedPreferenceFragment(AppPrefs.getInstance().input){
@@ -33,5 +37,11 @@ class InputSettingsFragment: ManagedPreferenceFragment(AppPrefs.getInstance().in
         chineseFanTi.unregisterOnChangeListener(switchKeyListener)
         emojiInput.unregisterOnChangeListener(switchKeyListener)
         doublePYSchemaMode.unregisterOnChangeListener(schemaModeListener)
+    }
+
+    override fun onPreferenceUiCreated(screen: PreferenceScreen) {
+        screen.addPreference(R.string.user_dict_manage) {
+            findNavController().navigate(R.id.userDictFragment)
+        }
     }
 }

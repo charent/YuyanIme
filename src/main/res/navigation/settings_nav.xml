@@ -46,7 +46,14 @@
         <action
             android:id="@+id/action_settingsFragment_to_privacyPolicyFragment"
             app:destination="@id/privacyPolicyFragment" />
+        <action
+            android:id="@+id/action_settingsFragment_to_userDictFragment"
+            app:destination="@id/userDictFragment" />
     </fragment>
+    <fragment
+        android:id="@+id/userDictFragment"
+        android:name="com.yuyan.imemodule.ui.fragment.UserDictFragment"
+        android:label="@string/user_dict" />
     <fragment
         android:id="@+id/sidebarSymbolFragment"
         android:name="com.yuyan.imemodule.ui.fragment.SidebarSymbolFragment"

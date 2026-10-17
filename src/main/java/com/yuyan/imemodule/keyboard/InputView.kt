@@ -59,6 +59,7 @@ import com.yuyan.imemodule.view.FullDisplayKeyboardBar
 import com.yuyan.imemodule.view.popup.PopupComponent
 import com.yuyan.imemodule.view.preference.ManagedPreference
 import com.yuyan.inputmethod.CustomEngine
+import com.yuyan.inputmethod.RimeEngine
 import com.yuyan.inputmethod.core.CandidateListItem
 import splitties.views.bottomPadding
 import splitties.views.rightPadding
@@ -518,8 +519,10 @@ class InputView(context: Context, private val service: ImeService) : IKeyboardVi
 
     fun chooseAndUpdate(candId: Int = mSkbCandidatesBarView.getActiveCandNo()) {
         val candidate = DictDecoder.getCandidate(candId)
-        if (candidate?.comment == "📋") {
+        if (candidate?.comment == RimeEngine.CUSTOM_TAG) {
             commitDecInfoText(candidate.text)
+            // 自定义候选不经过 Rime 选词，提交后清掉组合串，否则拼音会留在输入框上方
+            resetToIdleState()
         } else {
             val choice = DictDecoder.chooseDecodingCandidate(candId)
             if (DictDecoder.isCandidatesEmpty || DictDecoder.isAssociate) {
@@ -668,6 +671,7 @@ class InputView(context: Context, private val service: ImeService) : IKeyboardVi
         if (isAddPhrases) {
             mAddPhrasesLayout.commitText(resultText)
         } else {
+            RimeEngine.clearPendingLearning()
             service.commitText(StringUtils.converted2FlowerTypeface(resultText))
             if (InputModeSwitcher.isEnglish){
                 service.finishComposingText()
