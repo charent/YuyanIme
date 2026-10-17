@@ -34,31 +34,47 @@ class ClipBoardAdapter(context: Context, datas: MutableList<Clipboard>) :
     private var textColor: Int
     private var clipboardLayoutCompact: ClipboardLayoutMode
 
+    /** 序号字号：比正文小不少，只作定位用 */
+    private val indexTextSize: Float
+
     init {
         val theme = activeTheme
         textColor = theme.keyTextColor
         mContext = context
         clipboardLayoutCompact = AppPrefs.getInstance().clipboard.clipboardLayoutCompact.getValue()
+        indexTextSize = (instance.candidateTextSize * INDEX_TEXT_RATIO).coerceAtLeast(MIN_INDEX_TEXT_SIZE)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): SymbolHolder {
-        val mContainer = RelativeLayout(mContext)
-        mContainer.gravity = Gravity.CENTER_VERTICAL
         val marginValue = dip2px(3)
-        when (clipboardLayoutCompact){
-            ClipboardLayoutMode.ListView -> {
-                mContainer.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    setMargins(marginValue*2, marginValue, marginValue*2, marginValue)
-                }
+        // item 根布局透明：上半截放序号（落在两条内容之间的背景上），下半截是带背景的内容卡片
+        val mRoot = LinearLayout(mContext).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        mRoot.layoutParams = when (clipboardLayoutCompact){
+            ClipboardLayoutMode.ListView -> LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(marginValue*2, marginValue, marginValue*2, marginValue)
             }
-            else -> {
-                mContainer.layoutParams = GridLayoutManager.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    setMargins(marginValue, marginValue, marginValue, marginValue)
-                }
+            else -> GridLayoutManager.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(marginValue, marginValue, marginValue, marginValue)
             }
         }
+        // 序号：不在卡片内，位于卡片上方的间隔里，淡色小字，不抢正文
+        val viewIndex = TextView(mContext).apply {
+            id = R.id.clipboard_adapter_index
+            setTextSize(TypedValue.COMPLEX_UNIT_DIP, indexTextSize)
+            setTextColor(textColor)
+            alpha = INDEX_ALPHA
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = marginValue * 2
+            }
+        }
+        val mContainer = RelativeLayout(mContext)
+        mContainer.gravity = Gravity.CENTER_VERTICAL
+        mContainer.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT)
         mContainer.background = GradientDrawable().apply {
             setColor(activeTheme.keyBackgroundColor)
             setShape(GradientDrawable.RECTANGLE)
@@ -68,7 +84,8 @@ class ClipBoardAdapter(context: Context, datas: MutableList<Clipboard>) :
             id = R.id.clipboard_adapter_content
             maxLines = 3
             ellipsize = TextUtils.TruncateAt.END
-            gravity = Gravity.CENTER
+            gravity = Gravity.START
+            textAlignment = View.TEXT_ALIGNMENT_VIEW_START
             layoutParams = RelativeLayout.LayoutParams(RelativeLayout.LayoutParams.MATCH_PARENT, RelativeLayout.LayoutParams.WRAP_CONTENT).apply {
                 margin = marginValue
                 addRule(RelativeLayout.CENTER_IN_PARENT, RelativeLayout.TRUE)
@@ -84,11 +101,15 @@ class ClipBoardAdapter(context: Context, datas: MutableList<Clipboard>) :
         }
         mContainer.addView(viewContext)
         mContainer.addView(viewIvYopTips)
-        return SymbolHolder(mContainer)
+        mRoot.addView(viewIndex)
+        mRoot.addView(mContainer)
+        return SymbolHolder(mRoot)
     }
 
     override fun onBindViewHolder(holder: SymbolHolder, position: Int) {
         val data = mDatas[position]
+        // 序号按当前列表位置实时计算，删除后随位置变化自动重排，不落库
+        holder.textIndex.text = "${position + 1}:"
         holder.textView.text = data.content.replace("\n", "\\n")
         holder.ivTopTips.visibility = if(data.isKeep == 1)View.VISIBLE else View.GONE
     }
@@ -97,7 +118,8 @@ class ClipBoardAdapter(context: Context, datas: MutableList<Clipboard>) :
         return mDatas.size
     }
 
-    inner class SymbolHolder(view: RelativeLayout) : RecyclerView.ViewHolder(view) {
+    inner class SymbolHolder(view: View) : RecyclerView.ViewHolder(view) {
+        var textIndex: TextView = view.findViewById(R.id.clipboard_adapter_index)
         var textView: TextView = view.findViewById(R.id.clipboard_adapter_content)
         var ivTopTips: ImageView
         init {
@@ -105,5 +127,16 @@ class ClipBoardAdapter(context: Context, datas: MutableList<Clipboard>) :
             textView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, instance.candidateTextSize)
             ivTopTips = view.findViewById(R.id.clipboard_adapter_top_tips)
         }
+    }
+
+    private companion object {
+        /** 序号字号相对正文字号的占比 */
+        const val INDEX_TEXT_RATIO = 0.55f
+
+        /** 序号最小字号（dp） */
+        const val MIN_INDEX_TEXT_SIZE = 8f
+
+        /** 序号透明度，弱化显示 */
+        const val INDEX_ALPHA = 0.45f
     }
 }

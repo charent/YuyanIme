@@ -19,6 +19,11 @@ import com.yuyan.imemodule.prefs.behavior.KeyboardOneHandedMod
 import com.yuyan.imemodule.utils.DevicesUtils
 
 
+/** 剪贴板历史记录上限：最小 50 条，最大 1000 条，滑动步进 50 条（共 20 档） */
+const val CLIPBOARD_HISTORY_LIMIT_MIN = 50
+const val CLIPBOARD_HISTORY_LIMIT_MAX = 1000
+const val CLIPBOARD_HISTORY_LIMIT_STEP = 50
+
 class AppPrefs(private val sharedPreferences: SharedPreferences) {
 
     inner class Internal : ManagedPreferenceInternal(sharedPreferences) {
@@ -240,11 +245,11 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
         val clipboardHistoryLimit = int(
             R.string.clipboard_limit,
             "clipboard_limit",
-            50,
-            10,
-            110,
+            CLIPBOARD_HISTORY_LIMIT_MIN,
+            CLIPBOARD_HISTORY_LIMIT_MIN,
+            CLIPBOARD_HISTORY_LIMIT_MAX,
             "条",
-            10,
+            CLIPBOARD_HISTORY_LIMIT_STEP,
             defaultLabel = R.string.num_50
         ) { clipboardListening.getValue() }
         val clipboardSuggestion = switch(
