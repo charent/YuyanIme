@@ -27,9 +27,9 @@ const val CLIPBOARD_HISTORY_LIMIT_STEP = 50
 class AppPrefs(private val sharedPreferences: SharedPreferences) {
 
     inner class Internal : ManagedPreferenceInternal(sharedPreferences) {
-        val pinyinModeRime = string("input_method_pinyin_mode_rime", CustomConstant.SCHEMA_ZH_T9) //拼音输入模式记录，记录引擎
-        val inputDefaultMode = int("input_default_method_mode", InputModeSwitcher.MODE_T9_CHINESE)   //默认输入法类型
-        val inputMethodPinyinMode = int("input_method_pinyin_mode", InputModeSwitcher.MODE_T9_CHINESE)  // 保存中文输入法类型
+        val pinyinModeRime = string("input_method_pinyin_mode_rime", CustomConstant.SCHEMA_ZH_QWERTY) //拼音输入模式记录，记录引擎
+        val inputDefaultMode = int("input_default_method_mode", InputModeSwitcher.MODE_QWERTY_CHINESE)   //默认输入法类型
+        val inputMethodPinyinMode = int("input_method_pinyin_mode", InputModeSwitcher.MODE_QWERTY_CHINESE)  // 保存中文输入法类型
         val dataDictVersion = int("rime_dict_data_version", 0)  //缓存rime词库版本号,用于校验是否覆盖词库文件
         val keyboardHeightRatio = float("keyboard_height_ratio", 0.3f)     //键盘高度比例
         val keyboardHeightRatioLandscape = float("keyboard_height_ratio_landscape", 0.5f)     //键盘高度比例:横屏

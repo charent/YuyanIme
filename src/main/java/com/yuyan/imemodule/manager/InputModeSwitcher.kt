@@ -171,6 +171,11 @@ object InputModeSwitcher {
     const val MODE_T9_CHINESE = MASK_SKB_LAYOUT_T9_PINYIN or MASK_LANGUAGE_CN
 
     /**
+     * Mode for inputing Chinese with soft keyboard. 全键盘软键盘、中文模式
+     */
+    const val MODE_QWERTY_CHINESE = MASK_SKB_LAYOUT_QWERTY_PINYIN or MASK_LANGUAGE_CN
+
+    /**
      * Mode for inputing Chinese with soft keyboard. 手写软键盘、中文模式
      */
     const val MODE_HANDWRITING_CHINESE = MASK_SKB_LAYOUT_HANDWRITING or MASK_LANGUAGE_CN
