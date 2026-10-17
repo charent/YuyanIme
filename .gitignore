@@ -10,3 +10,5 @@ captures/
 keystore/keystore.properties
 /.kotlin
 *.log
+.workbuddy
+docs
