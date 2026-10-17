@@ -34,6 +34,8 @@ class CandidatesMenuAdapter(context: Context?) : RecyclerView.Adapter<Candidates
     private var mOnItemClickListener: OnRecyclerItemClickListener? = null
     private var itemHeight: Int = (instance.heightForCandidatesArea * 0.8f).toInt()
     private var mMenuPadding: Int = (instance.heightForCandidatesArea * 0.05f).toInt()
+    // 菜单图标之间的水平间隔，随图标尺寸自适应
+    private var mMenuGap: Int = (itemHeight * MENU_GAP_RATIO).toInt()
     var items: List<SkbFunItem> = emptyList()
         set(value) {
             val diffResult = DiffUtil.calculateDiff(MyDiffCallback(field, value))
@@ -63,6 +65,10 @@ class CandidatesMenuAdapter(context: Context?) : RecyclerView.Adapter<Candidates
         val layoutParams = holder.entranceIconImageView?.layoutParams
         layoutParams?.width = itemHeight
         layoutParams?.height = itemHeight
+        (holder.itemView.layoutParams as? ViewGroup.MarginLayoutParams)?.let {
+            it.marginStart = mMenuGap
+            it.marginEnd = mMenuGap
+        }
         holder.entranceIconImageView?.setImageResource(item.funImgResource)
         val color = if (isSettingsMenuSelect(item)) activeTheme.accentKeyBackgroundColor else activeTheme.keyTextColor
         holder.entranceIconImageView?.getDrawable()?.setTint(color)
@@ -125,6 +131,12 @@ class CandidatesMenuAdapter(context: Context?) : RecyclerView.Adapter<Candidates
     fun notifyChanged() {
         itemHeight = (instance.heightForCandidatesArea * 0.8f).toInt()
         mMenuPadding = (instance.heightForCandidatesArea * 0.05f).toInt()
+        mMenuGap = (itemHeight * MENU_GAP_RATIO).toInt()
         notifyDataSetChanged()
+    }
+
+    companion object {
+        // 图标左右各留出的间隔占图标尺寸的比例，值越大工具栏越宽松
+        private const val MENU_GAP_RATIO = 0.18f
     }
 }
