@@ -17,7 +17,7 @@ import com.yuyan.imemodule.manager.layout.CustomFlexboxLayoutManager
 /**
  * 表情或符号界面适配器
  */
-class SymbolPagerAdapter(context: Context, private val mDatas: Map<Int, List<String>>, val viewType: SymbolMode, private val onClickSymbol: (String, Int) -> Unit) :
+class SymbolPagerAdapter(context: Context, private val mDatas: Map<Int, List<String>>, val viewType: SymbolMode, private val onClickSymbol: (String, Int) -> Unit, private val onLongClickSymbol: ((String, View) -> Unit)? = null) :
     RecyclerView.Adapter<SymbolPagerAdapter.ViewHolder>() {
     private val mContext: Context
 
@@ -50,7 +50,7 @@ class SymbolPagerAdapter(context: Context, private val mDatas: Map<Int, List<Str
         manager.flexWrap = FlexWrap.WRAP
         manager.justifyContent = JustifyContent.SPACE_AROUND
         holder.emojiGroupRv.layoutManager = manager
-        val mSymbolAdapter = SymbolAdapter(mContext, viewType, position, onClickSymbol)
+        val mSymbolAdapter = SymbolAdapter(mContext, viewType, position, onClickSymbol, onLongClickSymbol)
         mSymbolAdapter.mDatas = item
         holder.emojiGroupRv.adapter = mSymbolAdapter
     }

@@ -24,11 +24,18 @@ import com.yuyan.imemodule.utils.StringUtils
 /**
  * 表情或符号界面适配器
  */
-class SymbolAdapter(context: Context?, val viewType: SymbolMode, private val pagerIndex: Int, private val onClickSymbol: (String, Int) -> Unit) :
+class SymbolAdapter(context: Context?, val viewType: SymbolMode, private val pagerIndex: Int, private val onClickSymbol: (String, Int) -> Unit, private val onLongClickSymbol: ((String, View) -> Unit)? = null) :
     RecyclerView.Adapter<SymbolAdapter.SymbolHolder>() {
     private val inflater: LayoutInflater
     var mDatas: List<String>? = null
     private val halfWidthSymbolsMode = AppPrefs.getInstance().keyboardSetting.halfWidthSymbolsMode.getValue()
+
+    companion object {
+        /** emoji 表情网格每行列数 */
+        const val EMOJI_COLUMN_COUNT = 8
+        /** emoji 表情 item 上下内边距（dp），控制行间距 */
+        const val EMOJI_ITEM_PADDING_DP = 4
+    }
 
     init {
         inflater = LayoutInflater.from(context)
@@ -51,6 +58,10 @@ class SymbolAdapter(context: Context?, val viewType: SymbolMode, private val pag
         holder.textView.setOnClickListener { _: View? ->
             onClickSymbol(mDatas!![position], position)
         }
+        holder.textView.setOnLongClickListener { v: View? ->
+            onLongClickSymbol?.invoke(mDatas!![position], v ?: holder.itemView)
+            true
+        }
     }
 
     override fun getItemCount(): Int {
@@ -65,17 +76,26 @@ class SymbolAdapter(context: Context?, val viewType: SymbolMode, private val pag
             textView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, instance.candidateTextSize * if(viewType != SymbolMode.Emojicon)1f else 0.9f)
             tVSdb = view.findViewById(R.id.tv_sdb_symbols_item)
             tVSdb.setTextColor(activeTheme.keyTextColor)
-            if(viewType == SymbolMode.Emojicon && pagerIndex == 1 && YuyanEmojiCompat.isWeChatInput){
-                (view.layoutParams as FlexboxLayoutManager.LayoutParams) .apply {
-                    width = (EnvironmentSingleton.instance.skbWidth - view.dp(18)) / 3
-                   setMargins(view.dp(3))
+            when {
+                // 颜文字（微信特殊页，三列）
+                viewType == SymbolMode.Emojicon && pagerIndex == 1 && YuyanEmojiCompat.isWeChatInput -> {
+                    (view.layoutParams as FlexboxLayoutManager.LayoutParams).apply {
+                        width = (EnvironmentSingleton.instance.skbWidth - view.dp(18)) / 3
+                        setMargins(view.dp(3))
+                    }
+                    val paddingStart = view.dp(5)
+                    val paddingTop = view.dp(10)
+                    textView.setPadding(paddingStart, paddingTop, paddingStart, paddingTop)
+                    view.setBackgroundResource(R.drawable.shape_emojicon_background)
                 }
-               val paddingStart =  view.dp(5)
-               val paddingTop =  view.dp(10)
-                textView.setPadding(paddingStart, paddingTop, paddingStart, paddingTop)
-                view.setBackgroundResource(R.drawable.shape_emojicon_background)
+                // emoji 表情网格：固定 8 列，缩小行间距
+                viewType == SymbolMode.Emojicon -> {
+                    (view.layoutParams as FlexboxLayoutManager.LayoutParams).apply {
+                        width = EnvironmentSingleton.instance.skbWidth / EMOJI_COLUMN_COUNT
+                    }
+                    textView.setPadding(0, view.dp(EMOJI_ITEM_PADDING_DP), 0, view.dp(EMOJI_ITEM_PADDING_DP))
+                }
             }
-
         }
     }
 }

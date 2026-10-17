@@ -6,12 +6,16 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.MotionEvent
+import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupWindow
+import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.view.setPadding
 import androidx.viewpager2.widget.ViewPager2
@@ -30,6 +34,7 @@ import com.yuyan.imemodule.prefs.behavior.SymbolMode
 import com.yuyan.imemodule.utils.DevicesUtils
 import com.yuyan.imemodule.keyboard.InputView
 import com.yuyan.imemodule.keyboard.KeyboardManager
+import com.yuyan.imemodule.singleton.EnvironmentSingleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -60,6 +65,7 @@ class SymbolContainer(context: Context, inputView: InputView) : BaseContainer(co
     private val ivDelete: ImageView
     var isLockSymbol = false
     private var mHandler: Handler? = null
+    private var mSkinTonePopup: PopupWindow? = null
 
     companion object {
         private const val MSG_REPEAT = 3
@@ -198,6 +204,82 @@ class SymbolContainer(context: Context, inputView: InputView) : BaseContainer(co
     }
 
     /**
+     * 长按 emoji：若支持肤色，弹出肤色选择弹窗（默认黄 + 5 肤色）
+     */
+    private fun onItemLongClickOperate(value: String, anchorView: View) {
+        // 去掉空格/换行
+        val emoji = value.replace("[ \\r]".toRegex(), "")
+        // 肤色映射 key 使用无 VS16 的基础形态，这里做 VS16 容差匹配
+        val variants = EmojiconData.skinToneVariants[emoji]
+            ?: EmojiconData.skinToneVariants[emoji.replace("\uFE0F", "")]
+        if (variants == null) {
+            // 不支持肤色，长按等同单击
+            onItemClickOperate(value)
+            return
+        }
+        DevicesUtils.tryPlayKeyDown()
+        DevicesUtils.tryVibrate(this)
+        showSkinTonePopup(emoji, variants, anchorView)
+    }
+
+    /**
+     * 弹出肤色选择弹窗：默认黄 + 5 个肤色变体
+     */
+    private fun showSkinTonePopup(baseEmoji: String, variants: List<String>, anchorView: View) {
+        dismissSkinTonePopup()
+        val content = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            val pad = dp(6)
+            setPadding(pad, pad, pad, pad)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(12).toFloat()
+                setColor(activeTheme.keyBackgroundColor)
+            }
+        }
+        // 选项列表：默认黄 + 5 肤色
+        val options = listOf(baseEmoji) + variants
+        options.forEach { opt ->
+            val tv = TextView(context).apply {
+                text = opt
+                textSize = EnvironmentSingleton.instance.candidateTextSize * 1.0f
+                val p = dp(8)
+                setPadding(p, dp(4), p, dp(4))
+                setTextColor(activeTheme.keyTextColor)
+                setOnClickListener {
+                    dismissSkinTonePopup()
+                    commitEmoji(opt)
+                }
+            }
+            content.addView(tv, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+        val popup = PopupWindow(content, LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT, true).apply {
+            isOutsideTouchable = true
+            isFocusable = true
+            setOnDismissListener { mSkinTonePopup = null }
+        }
+        mSkinTonePopup = popup
+        // 在锚点上方弹出
+        popup.showAsDropDown(anchorView, 0, -(anchorView.height + dp(10)))
+    }
+
+    private fun dismissSkinTonePopup() {
+        mSkinTonePopup?.dismiss()
+        mSkinTonePopup = null
+    }
+
+    /**
+     * 提交 emoji（肤色弹窗选择用）：直接插入 emoji 字符并记入最近使用
+     */
+    private fun commitEmoji(emoji: String) {
+        DataBaseKT.instance.usedSymbolDao().insert(UsedSymbol(symbol = emoji, type = "emoji"))
+        val num = max(DataBaseKT.instance.usedSymbolDao().getCount("emoji") - 50, 0)
+        DataBaseKT.instance.usedSymbolDao().deleteOldest("emoji", num)
+        inputView.responseKeyEvent(SoftKey(label = emoji))
+    }
+
+    /**
      * 切换显示界面
      */
     fun setSymbolsView() {
@@ -206,9 +288,9 @@ class SymbolContainer(context: Context, inputView: InputView) : BaseContainer(co
         ivDelete.setImageResource(R.drawable.icon_symbol_lock)
         ivDelete.drawable.setTint(activeTheme.keyTextColor)
         val mSymbolsEmoji = EmojiconData.symbolData
-        mVPSymbolsView.adapter = SymbolPagerAdapter(context, mSymbolsEmoji, mShowType){ symbol, _ ->
-            onItemClickOperate(symbol)
-        }
+        mVPSymbolsView.adapter = SymbolPagerAdapter(context, mSymbolsEmoji, mShowType,
+            onClickSymbol = { symbol, _ -> onItemClickOperate(symbol) }
+        )
         val data = mSymbolsEmoji.keys.toList()
         TabLayoutMediator(tabLayout, mVPSymbolsView) { tab, position ->
             tab.view.background = null
@@ -241,9 +323,10 @@ class SymbolContainer(context: Context, inputView: InputView) : BaseContainer(co
                 } else EmojiconData.emojiconData
             }
         }
-        mVPSymbolsView.adapter = SymbolPagerAdapter(context, mSymbolsEmoji, mShowType){ symbol, _ ->
-            onItemClickOperate(symbol)
-        }
+        mVPSymbolsView.adapter = SymbolPagerAdapter(context, mSymbolsEmoji, mShowType,
+            onClickSymbol = { symbol, _ -> onItemClickOperate(symbol) },
+            onLongClickSymbol = { symbol, anchor -> onItemLongClickOperate(symbol, anchor) }
+        )
         val data = mSymbolsEmoji.keys.toList()
         TabLayoutMediator(tabLayout, mVPSymbolsView) { tab, position ->
             tab.view.background = null
