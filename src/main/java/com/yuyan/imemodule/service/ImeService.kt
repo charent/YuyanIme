@@ -71,6 +71,8 @@ class ImeService : InputMethodService() {
     override fun onCreate() {
         super.onCreate()
         addOnChangedListener(onThemeChangeListener)
+        // 进程重建时需要先把已保存的开关值读回来，否则会一直按“有实体键盘”处理，软键盘渲染不出来
+        showVirtualKeyboardOnPhysicalKeyboard = getInstance().keyboardSetting.showVirtualKeyboardOnPhysicalKeyboard.getValue()
         getInstance().keyboardSetting.showVirtualKeyboardOnPhysicalKeyboard.registerOnChangeListener(showVirtualKeyboardOnPhysicalKeyboardListener)
         handleHardwareKeyboard()
         DictDecoder.candidatesLiveData.observeForever(candidatesObserver)

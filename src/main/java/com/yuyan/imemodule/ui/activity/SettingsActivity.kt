@@ -73,7 +73,10 @@ open class SettingsActivity : AppCompatActivity() {
             }
         }
         if(!AppPrefs.getInstance().internal.privacyPolicySure.getValue()){
-            navController.navigate(R.id.action_settingsFragment_to_privacyPolicyFragment)
+            // Activity 重建时导航图已恢复到隐私政策页，再次 navigate 会因找不到 action 而崩溃
+            if (savedInstanceState == null) {
+                navController.navigate(R.id.action_settingsFragment_to_privacyPolicyFragment)
+            }
             return
         }
         if (SetupActivity.shouldShowUp()) {
