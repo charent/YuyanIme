@@ -88,8 +88,9 @@ class EnvironmentSingleton private constructor() {
         heightForKeyboardMove = (heightForCandidatesArea * 0.2f).toInt()
 
         val keyboardFontSizeRatio = prefs.keyboardFontSize.getValue()/100f
-        keyTextSize = (skbHeight * 0.06f * keyboardFontSizeRatio).toInt()
-        keyTextSmallSize = (skbHeight * 0.04f * keyboardFontSizeRatio).toInt()
+        // 键帽字号：字母 0.077、上方小标点 0.052（标点绘制时还会乘 TextKeyboard 的 SYMBOL_SIZE_RATIO）
+        keyTextSize = (skbHeight * 0.077f * keyboardFontSizeRatio).toInt()
+        keyTextSmallSize = (skbHeight * 0.052f * keyboardFontSizeRatio).toInt()
         keyXMargin = (prefs.keyXMargin.getValue() / 1000f * skbWidth).toInt()
         keyYMargin = (prefs.keyYMargin.getValue() / 1000f * skbHeight).toInt()
         inputAreaHeight = skbHeight + heightForCandidatesArea + candidatesBottomGap
