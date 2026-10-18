@@ -11,7 +11,6 @@ import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
-import android.view.inputmethod.EditorInfo
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupWindow
@@ -24,7 +23,6 @@ import com.google.android.material.tabs.TabLayoutMediator
 import com.yuyan.imemodule.R
 import com.yuyan.imemodule.adapter.SymbolPagerAdapter
 import com.yuyan.imemodule.data.emojicon.EmojiconData
-import com.yuyan.imemodule.data.emojicon.YuyanEmojiCompat
 import com.yuyan.imemodule.data.theme.ThemeManager
 import com.yuyan.imemodule.data.theme.ThemeManager.activeTheme
 import com.yuyan.imemodule.database.DataBaseKT
@@ -35,10 +33,6 @@ import com.yuyan.imemodule.utils.DevicesUtils
 import com.yuyan.imemodule.keyboard.InputView
 import com.yuyan.imemodule.keyboard.KeyboardManager
 import com.yuyan.imemodule.singleton.EnvironmentSingleton
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import splitties.dimensions.dp
 import splitties.views.dsl.constraintlayout.bottomOfParent
 import splitties.views.dsl.constraintlayout.lParams
@@ -46,7 +40,6 @@ import splitties.views.dsl.core.add
 import splitties.views.dsl.core.matchParent
 import splitties.views.dsl.core.wrapContent
 import kotlin.math.max
-import kotlin.random.Random
 
 
 /**
@@ -183,23 +176,10 @@ class SymbolContainer(context: Context, inputView: InputView) : BaseContainer(co
             if(!isLockSymbol) KeyboardManager.instance.switchKeyboard()
             inputView.responseKeyEvent(softKey)
         } else {  //表情、颜文字
-            if(!YuyanEmojiCompat.isWeChatInput || mVPSymbolsView.currentItem != 1 ) {
-                DataBaseKT.instance.usedSymbolDao().insert(UsedSymbol(symbol = result, type = "emoji"))
-                val num = max(DataBaseKT.instance.usedSymbolDao().getCount("emoji") - 50, 0)
-                DataBaseKT.instance.usedSymbolDao().deleteOldest("emoji", num)
-                inputView.responseKeyEvent(softKey)
-            } else {
-                val emojions = EmojiconData.wechatEmojiconData[value]
-                if(emojions?.isNotEmpty() == true) {
-                    CoroutineScope(Dispatchers.Main).launch {
-                        emojions[Random.nextInt(emojions.size)].forEach {
-                            inputView.responseKeyEvent(SoftKey(label = it))
-                            inputView.performEditorAction(EditorInfo.IME_ACTION_SEND)
-                            delay(100)
-                        }
-                    }
-                }
-            }
+            DataBaseKT.instance.usedSymbolDao().insert(UsedSymbol(symbol = result, type = "emoji"))
+            val num = max(DataBaseKT.instance.usedSymbolDao().getCount("emoji") - 50, 0)
+            DataBaseKT.instance.usedSymbolDao().deleteOldest("emoji", num)
+            inputView.responseKeyEvent(softKey)
         }
     }
 
@@ -314,14 +294,7 @@ class SymbolContainer(context: Context, inputView: InputView) : BaseContainer(co
         ivDelete.drawable.setTint(activeTheme.keyTextColor)
         val mSymbolsEmoji = when (mShowType) {
             SymbolMode.Emoticon -> EmojiconData.emoticonData
-            else -> {
-                if (!YuyanEmojiCompat.isWeChatInput) {
-                    val data = LinkedHashMap<Int, List<String>>()
-                    data.putAll(EmojiconData.emojiconData)
-                    data.remove(R.drawable.icon_emojibar_wechat)
-                    data
-                } else EmojiconData.emojiconData
-            }
+            else -> EmojiconData.emojiconData
         }
         mVPSymbolsView.adapter = SymbolPagerAdapter(context, mSymbolsEmoji, mShowType,
             onClickSymbol = { symbol, _ -> onItemClickOperate(symbol) },

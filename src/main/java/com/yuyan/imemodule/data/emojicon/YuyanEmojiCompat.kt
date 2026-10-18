@@ -18,8 +18,6 @@ object YuyanEmojiCompat {
     var mEditorInfo:EditorInfo? = null
     private var metadataVersion: Int = 0
     private var replaceAll: Boolean = false
-    var isWeChatInput: Boolean = false
-    var isQQChatInput: Boolean = false
     private lateinit var systemFontPaint: Paint
     private lateinit var instanceNoReplace: InstanceHandler
     private lateinit var instanceReplaceAll: InstanceHandler
@@ -49,20 +47,6 @@ object YuyanEmojiCompat {
         this.mEditorInfo = editorInfo
         metadataVersion = editorInfo?.extras?.getInt(EmojiCompat.EDITOR_INFO_METAVERSION_KEY, 0) ?: 0
         replaceAll = editorInfo?.extras?.getBoolean(EmojiCompat.EDITOR_INFO_REPLACE_ALL_KEY, false) ?: false
-        isWeChatInput = isWechatInput(editorInfo)
-        isQQChatInput = isQQChatInput(editorInfo)
-
-    }
-
-    private fun isWechatInput(editorInfo: EditorInfo?): Boolean {
-        if(editorInfo == null || editorInfo.packageName != "com.tencent.mm") return  false
-        return editorInfo.extras?.getBoolean("IS_CHAT_EDITOR") == true
-    }
-
-    private fun isQQChatInput(editorInfo: EditorInfo?): Boolean {
-        if(editorInfo == null || editorInfo.packageName != "com.tencent.mobileqq") return  false
-        val bundle = editorInfo.extras ?: return false
-        return bundle.getInt("SOGOU_EXPRESSION_WEBP") == 1 || bundle.getInt("SOGOU_EXPRESSION") == 1 || bundle.getInt("SUPPORT_SOGOU_EXPRESSION") == 1
     }
 
     fun getEmojiMatch(emojiCompat:EmojiCompat?, emoji:String):Boolean {

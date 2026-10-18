@@ -7,12 +7,10 @@ import android.view.View
 import android.view.ViewGroup
 import splitties.dimensions.dp
 import android.widget.TextView
-import androidx.core.view.setMargins
 import androidx.emoji2.widget.EmojiTextView
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.flexbox.FlexboxLayoutManager
 import com.yuyan.imemodule.R
-import com.yuyan.imemodule.data.emojicon.YuyanEmojiCompat
 import com.yuyan.imemodule.data.theme.ThemeManager.activeTheme
 import com.yuyan.imemodule.prefs.AppPrefs
 import com.yuyan.imemodule.prefs.behavior.HalfWidthSymbolsMode
@@ -79,33 +77,20 @@ class SymbolAdapter(context: Context?, val viewType: SymbolMode, private val pag
         var tVSdb: TextView
         init {
             textView.setTextColor(activeTheme.keyTextColor)
-            textView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, instance.candidateTextSize * if(viewType != SymbolMode.Emojicon)1f else 0.9f)
+            textView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, instance.candidateTextSize)
             tVSdb = view.findViewById(R.id.tv_sdb_symbols_item)
             tVSdb.setTextColor(activeTheme.keyTextColor)
-            when {
-                // 颜文字（微信特殊页，三列）
-                viewType == SymbolMode.Emojicon && pagerIndex == 1 && YuyanEmojiCompat.isWeChatInput -> {
-                    (view.layoutParams as FlexboxLayoutManager.LayoutParams).apply {
-                        width = (EnvironmentSingleton.instance.skbWidth - view.dp(18)) / 3
-                        setMargins(view.dp(3))
-                    }
-                    val paddingStart = view.dp(5)
-                    val paddingTop = view.dp(10)
-                    textView.setPadding(paddingStart, paddingTop, paddingStart, paddingTop)
-                    view.setBackgroundResource(R.drawable.shape_emojicon_background)
+            // emoji 表情网格：固定 8 列，表情字号按单元格宽度放大，缩小行间距
+            if (viewType == SymbolMode.Emojicon) {
+                val environment = EnvironmentSingleton.instance
+                val cellWidth = environment.skbWidth / EMOJI_COLUMN_COUNT
+                (view.layoutParams as FlexboxLayoutManager.LayoutParams).apply {
+                    width = cellWidth
                 }
-                // emoji 表情网格：固定 8 列，表情字号按单元格宽度放大，缩小行间距
-                viewType == SymbolMode.Emojicon -> {
-                    val environment = EnvironmentSingleton.instance
-                    val cellWidth = environment.skbWidth / EMOJI_COLUMN_COUNT
-                    (view.layoutParams as FlexboxLayoutManager.LayoutParams).apply {
-                        width = cellWidth
-                    }
-                    // 表情字号随屏幕宽度自适应：单元格宽度的 70%，同时限制为至少能显示 EMOJI_MIN_ROWS 行
-                    val emojiSizePx = min(cellWidth * EMOJI_TEXT_SIZE_RATIO, environment.skbHeight / EMOJI_MIN_ROWS.toFloat())
-                    textView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, DevicesUtils.px2dip(emojiSizePx.toInt()))
-                    textView.setPadding(0, view.dp(EMOJI_ITEM_PADDING_DP), 0, view.dp(EMOJI_ITEM_PADDING_DP))
-                }
+                // 表情字号随屏幕宽度自适应：单元格宽度的 70%，同时限制为至少能显示 EMOJI_MIN_ROWS 行
+                val emojiSizePx = min(cellWidth * EMOJI_TEXT_SIZE_RATIO, environment.skbHeight / EMOJI_MIN_ROWS.toFloat())
+                textView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, DevicesUtils.px2dip(emojiSizePx.toInt()))
+                textView.setPadding(0, view.dp(EMOJI_ITEM_PADDING_DP), 0, view.dp(EMOJI_ITEM_PADDING_DP))
             }
         }
     }
