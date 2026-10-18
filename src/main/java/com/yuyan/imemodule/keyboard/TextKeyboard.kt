@@ -38,9 +38,12 @@ open class TextKeyboard(context: Context?) : BaseKeyboardView(context){
     private var mNormalKeyTextSizeSmall = 0  //正常按键的文本大小(小值)
     private val mPaint: Paint = Paint()   //绘制按键的画笔
     private val mSymbolBounds = Rect() // 上方小标点的墨迹范围，用于按墨迹下沿对齐
+    private val mInkBounds = Rect() // 水平居中所用的墨迹范围（全角标点墨迹偏在字格左侧）
     private var isKeyBorder = false // 启用按键边框
     protected lateinit var mActiveTheme: Theme
     private var keyRadius = 0
+    private var keyShadowOffset = 0 // 键帽底部投影的下移量（px）
+    private val mShadowDrawable = GradientDrawable() // 复用的投影图层，避免每次绘制都新建对象
     private var keyboardFontBold = false
     private var keyboardSymbol = false
     private var keyboardMnemonic = false
@@ -143,6 +146,7 @@ open class TextKeyboard(context: Context?) : BaseKeyboardView(context){
             val env = instance
             mNormalKeyTextSize = env.keyTextSize
             mNormalKeyTextSizeSmall = env.keyTextSmallSize
+            keyShadowOffset = max(1, (resources.displayMetrics.density * KEY_SHADOW_OFFSET_DP).toInt())
             val keyXMargin = mSoftKeyboard!!.keyXMargin
             val keyYMargin = if(skbStyleMode == SkbStyleMode.Google && InputModeSwitcher.isQwert) mSoftKeyboard!!.keyYMargin * 1.5
                 else mSoftKeyboard!!.keyYMargin
@@ -169,14 +173,23 @@ open class TextKeyboard(context: Context?) : BaseKeyboardView(context){
         val bg = GradientDrawable()
         bg.shape = GradientDrawable.RECTANGLE
         bg.cornerRadius = keyRadius.toFloat() // 设置圆角半径
-        bg.setBounds(softKey.mLeft + keyXMargin, softKey.mTop + keyYMargin, softKey.mRight - keyXMargin, softKey.mBottom - keyYMargin)
+        val keyLeft = softKey.mLeft + keyXMargin
+        val keyTop = softKey.mTop + keyYMargin
+        val keyRight = softKey.mRight - keyXMargin
+        val keyBottom = softKey.mBottom - keyYMargin
+        // 键帽底部投影：先铺一层下移的深色圆角矩形，键帽盖在上面，只在下方露出阴影
+        if (isKeyBorder && !mActiveTheme.isDark && keyRight > keyLeft && keyBottom > keyTop) {
+            drawKeyShadow(canvas, keyLeft, keyTop, keyRight, keyBottom)
+        }
+        bg.setBounds(keyLeft, keyTop, keyRight, keyBottom)
         if (softKey.pressed || (mService?.hasSelection == true && softKey.code == InputModeSwitcher.USER_KEYCODE_SELECT_MODE)) {
             bg.setColor(mActiveTheme.keyPressHighlightColor)
             bg.draw(canvas)
         } else if (isKeyBorder) {
             val background = when (softKey.code) {
                 KeyEvent.KEYCODE_ENTER -> mActiveTheme.accentKeyBackgroundColor
-                KeyEvent.KEYCODE_SPACE-> mActiveTheme.functionKeyBackgroundColor
+                InputModeSwitcher.USER_KEYCODE_SYMBOL, InputModeSwitcher.USER_KEYCODE_NUMBER,
+                InputModeSwitcher.USER_KEYCODE_LANG -> mActiveTheme.functionKeyBackgroundColor
                 else  -> mActiveTheme.keyBackgroundColor
             }
             bg.setColor(background)
@@ -247,10 +260,12 @@ open class TextKeyboard(context: Context?) : BaseKeyboardView(context){
             mPaint.setTypeface(TYPEFACE_REGULAR)
             if(skbStyleMode == SkbStyleMode.Samsung)mPaint.alpha = 128
             mPaint.textSize = smallTextSizeF
+            // 一律按墨迹定位：全角标点（！？，。）的墨迹偏在字形格左侧，按步进宽度居中会整体偏左，
+            // 中英切换时同一位的小标点就会左右跳动
             val x = when(prefs.skbStyleMode.getValue()){
-                SkbStyleMode.Yuyan -> softKey.mLeft + (softKey.width() - mPaint.measureText(keyLabelSmall)) / 2.0f
-                SkbStyleMode.Samsung -> softKey.mRight - mPaint.measureText(keyLabelSmall) - keyXMargin * 2
-                SkbStyleMode.Google -> softKey.mRight - mPaint.measureText(keyLabelSmall) - keyXMargin * 2
+                SkbStyleMode.Yuyan -> inkCenteredX(softKey, keyLabelSmall)
+                SkbStyleMode.Samsung -> inkRightX(softKey, keyLabelSmall, keyXMargin)
+                SkbStyleMode.Google -> inkRightX(softKey, keyLabelSmall, keyXMargin)
             }
             // 叠放时按组块顶边定位，其余风格沿用键帽上部固定位置
             val y = if (stackedSymbol) symbolBaseline else softKey.mTop + weightHeigth * 1.1f
@@ -320,9 +335,28 @@ open class TextKeyboard(context: Context?) : BaseKeyboardView(context){
             mPaint.color = textColor
             // 系统字体族固定为 sans-serif；不加粗时用 medium 字重，避免常规字重在小屏上显得过细
             mPaint.typeface = if (keyboardFontBold) TYPEFACE_BOLD else TYPEFACE_MEDIUM
-            mPaint.textSize =  keyTextSizeF
-            val x = softKey.mLeft + (softKey.width() - mPaint.measureText(keyLabel)) / 2.0f
-            canvas.drawText(keyLabel, x, letterBaseline, mPaint)
+            var labelSize = keyTextSizeF
+            mPaint.textSize = labelSize
+            var labelWidth = mPaint.measureText(keyLabel)
+            // 键帽左右各被 keyXMargin 吃掉一块，文字再留一点内边距；超宽时等比缩小，「123」「符号」不会再顶出键帽
+            val innerWidth = softKey.width() - keyXMargin * 2f - LABEL_SIDE_PADDING * 2
+            if (innerWidth > 0f && labelWidth > innerWidth) {
+                labelSize *= innerWidth / labelWidth
+                mPaint.textSize = labelSize
+                labelWidth = mPaint.measureText(keyLabel)
+            }
+            // 全角标点（，。！？）的墨迹偏在字形格左侧，按步进居中会整体偏左，中英切换时位置会跳；
+            // ASCII 字母/数字仍按步进居中，保证整行等距，不会因为字形宽窄忽左忽右
+            val x = if (keyLabel.any { it.code > 0x7F }) inkCenteredX(softKey, keyLabel)
+                else softKey.mLeft + (softKey.width() - labelWidth) / 2.0f
+            // 单个字母/数字共用字母基线，保证整行高低一致；
+            // 汉字与多字符标签（符号、分词、123…）按墨迹真正的上下沿居中，否则会明显压底
+            val baseline = if (isStandaloneLabel(keyLabel)) {
+                mPaint.getTextBounds(keyLabel, 0, keyLabel.length, mSymbolBounds)
+                val centerY = (softKey.mTop + softKey.mBottom) / 2.0f + softKey.height() * LABEL_CENTER_OFFSET_RATIO
+                centerY - (mSymbolBounds.top + mSymbolBounds.bottom) / 2.0f
+            } else letterBaseline
+            canvas.drawText(keyLabel, x, baseline, mPaint)
         }
         if (keyboardMnemonic && !TextUtils.isEmpty(keyMnemonic)) {  //助记符位于中下方
             mPaint.color = textColor
@@ -332,6 +366,35 @@ open class TextKeyboard(context: Context?) : BaseKeyboardView(context){
             val y = softKey.mTop + weightHeigth * 3 + weightHeigth / 2.0f
             canvas.drawText(keyMnemonic, x, y, mPaint)
         }
+    }
+
+    /**
+     * 按墨迹宽度把文字水平居中到键帽内。
+     * 全角标点（！？，。：；）的墨迹落在字形格左侧、右侧留空，用 measureText 居中会看起来偏左，
+     * 中英切换时同一位置的小标点就会左右跳动，所以统一按墨迹边界定位。
+     */
+    private fun inkCenteredX(softKey: SoftKey, text: String): Float {
+        mPaint.getTextBounds(text, 0, text.length, mInkBounds)
+        return softKey.mLeft + (softKey.width() - mInkBounds.width()) / 2.0f - mInkBounds.left
+    }
+
+    /** 按墨迹右边界贴齐键帽右侧（Samsung/Google 风格的小标点位置） */
+    private fun inkRightX(softKey: SoftKey, text: String, keyXMargin: Int): Float {
+        mPaint.getTextBounds(text, 0, text.length, mInkBounds)
+        return softKey.mRight - keyXMargin * 2f - mInkBounds.right
+    }
+
+    // 键帽底部投影：两层圆角矩形，远端浅、近端深，键帽盖在上面后只在下方露出阴影
+    private fun drawKeyShadow(canvas: Canvas, left: Int, top: Int, right: Int, bottom: Int) {
+        val dy = keyShadowOffset
+        mShadowDrawable.shape = GradientDrawable.RECTANGLE
+        mShadowDrawable.cornerRadius = keyRadius.toFloat()
+        mShadowDrawable.setColor(KEY_SHADOW_FAR_COLOR)
+        mShadowDrawable.setBounds(left, top + dy * 2, right, bottom + dy * 2)
+        mShadowDrawable.draw(canvas)
+        mShadowDrawable.setColor(KEY_SHADOW_NEAR_COLOR)
+        mShadowDrawable.setBounds(left, top + dy, right, bottom + dy)
+        mShadowDrawable.draw(canvas)
     }
 
     override fun onDetachedFromWindow() {
@@ -379,5 +442,26 @@ open class TextKeyboard(context: Context?) : BaseKeyboardView(context){
 
         // 语言键文字两侧的最小留白（px），防止贴到键帽边缘
         private const val LANG_KEY_SIDE_PADDING = 4f
+
+        // 键帽文字与键帽边缘的最小留白（px）
+        private const val LABEL_SIDE_PADDING = 2f
+
+        // 汉字/多字符标签按墨迹居中时，相对键帽中心的下移量（相对键高），与字母的视觉重心保持一致
+        private const val LABEL_CENTER_OFFSET_RATIO = 0.03f
+
+        // 键帽底部投影：下移量（dp）与两层阴影颜色
+        private const val KEY_SHADOW_OFFSET_DP = 1f
+        private const val KEY_SHADOW_NEAR_COLOR = 0x3D000000
+        private const val KEY_SHADOW_FAR_COLOR = 0x1A000000
+
+        /**
+         * 标签是否按墨迹居中：汉字（符号/分词/返回…）与多字符数字（123）按墨迹上下沿居中；
+         * 单个字母、数字和标点沿用统一字母基线，避免「，」「。」这类偏下墨迹被抬到中间
+         */
+        private fun isStandaloneLabel(label: String): Boolean {
+            val hasHan = label.any { it.code in 0x4E00..0x9FFF }
+            val hasDigit = label.length > 1 && label.any { it.isDigit() }
+            return hasHan || hasDigit
+        }
     }
 }

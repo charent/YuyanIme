@@ -170,7 +170,8 @@ class KeyboardLoaderUtil private constructor() {
                 }
                 rows.add(keyBeans)
                 keyBeans = lastRows(skbValue)
-                keyBeans[keyBeans.size -2].stateId = 1
+                // 语言键状态：按 code 定位，避免行内键位调整后「倒数第二个」指到别的键
+                keyBeans.firstOrNull { it.code == InputModeSwitcher.USER_KEYCODE_LANG }?.stateId = 1
                 rows.add(keyBeans)
             }
             InputModeSwitcher.MASK_SKB_LAYOUT_NUMBER -> {  // 5000 数字键盘
@@ -337,8 +338,10 @@ class KeyboardLoaderUtil private constructor() {
                     createQwertyKeys(arrayOf(InputModeSwitcher.USER_KEYCODE_SYMBOL, InputModeSwitcher.USER_KEYCODE_LANG,
                         InputModeSwitcher.USER_KEYCODE_LEFT_COMMA, KeyEvent.KEYCODE_SPACE, InputModeSwitcher.USER_KEYCODE_LEFT_PERIOD, InputModeSwitcher.USER_KEYCODE_NUMBER))
                 } else {
-                    createQwertyKeys(arrayOf(InputModeSwitcher.USER_KEYCODE_SYMBOL, InputModeSwitcher.USER_KEYCODE_NUMBER,
-                            InputModeSwitcher.USER_KEYCODE_LEFT_PERIOD, KeyEvent.KEYCODE_SPACE, InputModeSwitcher.USER_KEYCODE_LANG))
+                    // 雅燕风格：符号、中/EN、,!、空格、.?、123，与主流输入法一致
+                    createQwertyKeys(arrayOf(InputModeSwitcher.USER_KEYCODE_SYMBOL, InputModeSwitcher.USER_KEYCODE_LANG,
+                        InputModeSwitcher.USER_KEYCODE_LEFT_COMMA, KeyEvent.KEYCODE_SPACE, InputModeSwitcher.USER_KEYCODE_LEFT_PERIOD,
+                        InputModeSwitcher.USER_KEYCODE_NUMBER))
                 }
             }
             InputModeSwitcher.MASK_SKB_LAYOUT_NUMBER -> {
@@ -364,8 +367,10 @@ class KeyboardLoaderUtil private constructor() {
                     createQwertyPYKeys(arrayOf(InputModeSwitcher.USER_KEYCODE_SYMBOL, InputModeSwitcher.USER_KEYCODE_LANG,
                         InputModeSwitcher.USER_KEYCODE_LEFT_COMMA, KeyEvent.KEYCODE_SPACE, InputModeSwitcher.USER_KEYCODE_LEFT_PERIOD, InputModeSwitcher.USER_KEYCODE_NUMBER))
                 } else {
-                    createQwertyPYKeys(arrayOf(InputModeSwitcher.USER_KEYCODE_SYMBOL, InputModeSwitcher.USER_KEYCODE_NUMBER,
-                            InputModeSwitcher.USER_KEYCODE_LEFT_COMMA, KeyEvent.KEYCODE_SPACE, InputModeSwitcher.USER_KEYCODE_LANG))
+                    // 雅燕风格：符号、中/EN、，！、空格、。？、123，与主流输入法一致
+                    createQwertyPYKeys(arrayOf(InputModeSwitcher.USER_KEYCODE_SYMBOL, InputModeSwitcher.USER_KEYCODE_LANG,
+                        InputModeSwitcher.USER_KEYCODE_LEFT_COMMA, KeyEvent.KEYCODE_SPACE, InputModeSwitcher.USER_KEYCODE_LEFT_PERIOD,
+                        InputModeSwitcher.USER_KEYCODE_NUMBER))
                 }
             }
         }
@@ -410,7 +415,13 @@ class KeyboardLoaderUtil private constructor() {
                 }
             }
         } else {
-            if (t9Keys.size == 5) {
+            if (t9Keys.size == 6) {
+                // 符号、中/EN、，！、空格、。？、123：空格收窄，给新增的「。？」让位
+                softKeyToggle.widthF = 0.147f
+                t9Keys[0].widthF = 0.147f;t9Keys[1].widthF = 0.12f
+                t9Keys[2].widthF = 0.1f;t9Keys[3].widthF = 0.258f
+                t9Keys[4].widthF = 0.1f;t9Keys[5].widthF = 0.115f
+            } else if (t9Keys.size == 5) {
                 softKeyToggle.widthF = 0.147f
                 t9Keys[0].widthF = 0.147f;t9Keys[1].widthF = 0.099f
                 t9Keys[2].widthF = 0.099f;t9Keys[3].widthF = 0.396f

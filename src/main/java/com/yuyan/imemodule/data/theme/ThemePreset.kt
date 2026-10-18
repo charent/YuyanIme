@@ -9,15 +9,17 @@ object ThemePreset {
         name = "MaterialLight",
         isDark = false,
         keyboardResources = 0x0,
-        keyboardColor = 0xffeceff1,
-        barColor = 0xffe4e7e9,
+        // 键盘底色改成与主流输入法一致的浅灰，白色键帽 + 底部投影才有「浮起」的层次
+        keyboardColor = 0xffd6d7dc,
+        barColor = 0xffd6d7dc,
         keyBackgroundColor = 0xfffbfbfc,
         keyTextColor = 0xff37474f,
         accentKeyBackgroundColor = 0xff0f73ff,
         accentKeyTextColor = 0xffffffff,
         keyPressHighlightColor = 0x1f000000,
         popupBackgroundColor = 0xffd9dbdd,
-        functionKeyBackgroundColor = 0xffc9ced1,
+        // 功能键（符号 / 中英 / 123）比底色再深一档，否则在浅灰底上几乎看不见边界
+        functionKeyBackgroundColor = 0xffafb3bc,
         functionKeyPressHighlightColor = 0x1f000000,
     )
 
