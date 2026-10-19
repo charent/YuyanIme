@@ -12,6 +12,7 @@ import com.yuyan.imemodule.callback.OnRecyclerItemClickListener
 import com.yuyan.imemodule.data.theme.ThemeManager.activeTheme
 import com.yuyan.imemodule.service.DictDecoder
 import com.yuyan.imemodule.singleton.EnvironmentSingleton.Companion.instance
+import com.yuyan.inputmethod.RimeEngine
 
 /**
  * 候选词界面适配器
@@ -37,7 +38,9 @@ class CandidatesBarAdapter(context: Context?) :
 
     override fun onBindViewHolder(holder: SymbolHolder, position: Int) {
         if(DictDecoder.isCandidatesEmpty) return
-        holder.textView.text = DictDecoder.candidates[position].text
+        val item = DictDecoder.candidates.getOrNull(position) ?: return
+        holder.textView.text =
+            if (item.comment == RimeEngine.CORRECTION_TAG) markCorrection(item.text) else item.text
         holder.textView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, instance.candidateTextSize)
         holder.textView.setTextColor(if(mActiveCandNo-1 == position) activeTheme.accentKeyBackgroundColor else activeTheme.keyTextColor)
         if (mOnItemClickListener != null) {

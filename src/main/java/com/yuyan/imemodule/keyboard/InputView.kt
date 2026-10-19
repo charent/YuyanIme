@@ -540,7 +540,10 @@ class InputView(context: Context, private val service: ImeService) : IKeyboardVi
 
     fun chooseAndUpdate(candId: Int = mSkbCandidatesBarView.getActiveCandNo()) {
         val candidate = DictDecoder.getCandidate(candId)
-        if (candidate?.comment == RimeEngine.CUSTOM_TAG) {
+        val tag = candidate?.comment
+        if (candidate != null && (tag == RimeEngine.CUSTOM_TAG || tag == RimeEngine.CORRECTION_TAG)) {
+            // 纠错候选的编码和 Rime 组合串不同，只能直接提交文本；顺手把这次纠正学进用户词库
+            if (tag == RimeEngine.CORRECTION_TAG) RimeEngine.learnCorrection(candidate.text)
             commitDecInfoText(candidate.text)
             // 自定义候选不经过 Rime 选词，提交后清掉组合串，否则拼音会留在输入框上方
             resetToIdleState()

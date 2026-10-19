@@ -27,6 +27,7 @@ import com.yuyan.imemodule.service.InputDispatcher
 import com.yuyan.imemodule.singleton.EnvironmentSingleton.Companion.instance
 import com.yuyan.imemodule.utils.DevicesUtils
 import com.yuyan.imemodule.utils.StringUtils
+import com.yuyan.inputmethod.RimeEngine
 import splitties.dimensions.dp
 import splitties.views.bottomPadding
 import splitties.views.leftPadding
@@ -211,6 +212,15 @@ class CandidateView(context: Context, private val service: ImeService) : IKeyboa
     }
 
     fun chooseAndUpdate(candId: Int = mSkbCandidatesBarView.getActiveCandNo()) {
+        // 用户词库 / 拼音纠错的候选不属于 Rime 的候选表，只能直接提交文本
+        val candidate = DictDecoder.getCandidate(candId)
+        val tag = candidate?.comment
+        if (candidate != null && (tag == RimeEngine.CUSTOM_TAG || tag == RimeEngine.CORRECTION_TAG)) {
+            if (tag == RimeEngine.CORRECTION_TAG) RimeEngine.learnCorrection(candidate.text)
+            commitDecInfoText(candidate.text)
+            resetToIdleState()
+            return
+        }
         val choice = DictDecoder.chooseDecodingCandidate(candId)
         if (DictDecoder.isCandidatesEmpty || DictDecoder.isAssociate) {
             commitDecInfoText(choice)

@@ -9,6 +9,7 @@ import com.yuyan.imemodule.prefs.AppPrefs
 import com.yuyan.imemodule.utils.StringUtils
 import com.yuyan.inputmethod.core.CandidateListItem
 import com.yuyan.inputmethod.core.Rime
+import com.yuyan.inputmethod.correction.CorrectionSession
 import com.yuyan.inputmethod.data.InputKey
 import com.yuyan.inputmethod.data.KeyRecordStack
 import com.yuyan.inputmethod.util.DoublePinYinUtils
@@ -35,6 +36,13 @@ object RimeEngine {
 
     /** 自定义候选（用户词库 / 常用语 / 日期联想）在候选栏上的标记，点击时直接提交文本 */
     const val CUSTOM_TAG = "📋"
+
+    /**
+     * 拼音纠错候选的标记（设计文档 `docs/pinyin-correction-design.md`）。
+     * 与 [CUSTOM_TAG] 一样走「直接提交文本」的通道：纠错候选的编码和 Rime 当前组合串不同，
+     * 不能交给 Rime 选词。候选栏只会在词的右上角补一个很小的 `?`（`CandidatesBarAdapter`）。
+     */
+    const val CORRECTION_TAG = "?"
 
     /**
      * 剔除"编码本身"后若已无其它候选，是否保留它作为唯一可上屏项。
@@ -186,6 +194,7 @@ object RimeEngine {
         pendingSelects.clear()
         keyRecordStack.clear()
         Rime.clearComposition()
+        CorrectionSession.reset()
         if(charCase == KeyEvent.META_SHIFT_ON) charCase = MASK_CASE_LOWER
     }
 
@@ -207,6 +216,17 @@ object RimeEngine {
     /** 走自定义候选（📋）直接提交时不经过 Rime 选词，清掉待结算记录避免串到下一次输入 */
     fun clearPendingLearning() {
         pendingSelects.clear()
+    }
+
+    /**
+     * 用户选中了纠错候选（≈）：把「打错的编码 -> 正确词」记进用户词库。
+     * 这是离线可做的自适应闭环——下次同样的错码直接命中，不用再算一遍纠错。
+     * 是否真的落库由「自动学习纠正的词」开关和 `UserDictManager` 的合法性检查决定。
+     */
+    fun learnCorrection(text: String) {
+        val code = CorrectionSession.lastRawCode
+        if (code.isBlank() || text.isBlank()) return
+        UserDictManager.learn(code, text, Rime.getCurrentRimeSchema())
     }
 
     fun destroy() = Rime.destroy()
@@ -256,7 +276,10 @@ object RimeEngine {
             rimeIndexes = IntArray(0)
             return preCommitText
         }
-        val candidates = Rime.getRimeContext()?.candidates?.asList() ?: emptyList()
+        val rimeContext = Rime.getRimeContext()
+        val candidates = rimeContext?.candidates?.asList() ?: emptyList()
+        // 候选总数当作「词库支持度」，纠错用它判断变体是不是比用户输入的更像个词
+        val candidateTotal = rimeContext?.menu?.numCandidates ?: candidates.size
         customPhraseSize = 0
         val compositionText = Rime.compositionText
         // 定位"编码本身"候选（echo_translator 的产物）；只有还存在别的候选时才剔掉它，
@@ -333,7 +356,67 @@ object RimeEngine {
         }
         showComposition = composition
         preCommitText = ""
+        // 纠错只在「输入不可解析 / 明显多打」时介入，正常输入一律不动（见设计文档 4.2）。
+        // 放在最后做：影子查询会临时改写再还原组合串，不能让上面的拼音展示/大小写处理读到中间态。
+        if (compositionText.isNotBlank()) applyPinyinCorrection(compositionText, candidates, candidateTotal)
         return null
+    }
+
+    /**
+     * 把纠错候选插进 [showCandidates]。
+     *
+     * - 置前：Rime 一个真实候选都没有；
+     * - 插在首个候选之后：不改变原来的首位，又保证用户看得见；
+     * - 追加到最后：合法输入的模糊音扩展。
+     *
+     * 「提升」语义：如果纠错词在 Rime 的候选里本来就存在（`beijingg` 的「北京」就在第 5 位），
+     * 会把它从原位置删掉、换成带标记的副本放到纠错位置，否则用户会觉得「纠错没生效」。
+     * 插入项在 [rimeIndexes] 里记 -1，选词由 `InputView` 直接提交文本，不进 Rime。
+     */
+    private fun applyPinyinCorrection(
+        compositionText: String,
+        rimeCandidates: List<CandidateListItem>,
+        candidateTotal: Int,
+    ) {
+        val correction = CorrectionSession.correct(
+            compositionText,
+            rimeCandidates,
+            showCandidates.map { it.text },
+            candidateTotal,
+        ) ?: return
+        if (correction.texts.isEmpty()) return
+
+        val items = correction.texts.map { CandidateListItem(CORRECTION_TAG, it) }
+        val at = when (correction.placement) {
+            CorrectionSession.Placement.FRONT -> 0
+            CorrectionSession.Placement.AFTER_FIRST ->
+                // 跳过用户词库注入的自定义候选，但保留第一个 Rime 候选在原位
+                (customPhraseSize + 1).coerceAtMost(showCandidates.size)
+            CorrectionSession.Placement.TAIL -> showCandidates.size
+        }
+        // 模糊音追加在最后时不删重（末尾重复无伤大雅），纠错则要把原有同词提上来
+        val dedupe = correction.placement != CorrectionSession.Placement.TAIL
+        val promoted = if (dedupe) correction.texts.map { it.lowercase(Locale.ROOT) }.toHashSet() else emptySet()
+
+        val headItems = showCandidates.take(at)
+        val headIndexes = rimeIndexes.take(at)
+        val tailItems = ArrayList<CandidateListItem>(showCandidates.size - at)
+        val tailIndexes = ArrayList<Int>(rimeIndexes.size - at)
+        for (i in at until showCandidates.size) {
+            val item = showCandidates[i]
+            if (item.text.lowercase(Locale.ROOT) in promoted) continue
+            tailItems.add(item)
+            tailIndexes.add(rimeIndexes[i])
+        }
+
+        showCandidates = headItems + items + tailItems
+        val mergedIndexes = ArrayList<Int>(headIndexes.size + items.size + tailIndexes.size)
+        mergedIndexes.addAll(headIndexes)
+        repeat(items.size) { mergedIndexes.add(-1) }
+        mergedIndexes.addAll(tailIndexes)
+        rimeIndexes = mergedIndexes.toIntArray()
+        // 插到自定义候选之前时，首位判定要跟着挪
+        if (at <= customPhraseSize) customPhraseSize += items.size
     }
 
     /**

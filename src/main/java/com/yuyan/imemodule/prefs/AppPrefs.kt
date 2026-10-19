@@ -16,6 +16,7 @@ import com.yuyan.imemodule.prefs.behavior.FullDisplayCenterMode
 import com.yuyan.imemodule.prefs.behavior.FullDisplayKeyMode
 import com.yuyan.imemodule.prefs.behavior.HalfWidthSymbolsMode
 import com.yuyan.imemodule.prefs.behavior.KeyboardOneHandedMod
+import com.yuyan.imemodule.prefs.behavior.PinyinCorrectionStrength
 import com.yuyan.imemodule.utils.DevicesUtils
 
 
@@ -95,6 +96,41 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
         val chinesePredictionDate = switch(
             R.string.chinese_association_date, "chinese_association_date_enable", true
         )
+
+        val titlePinyinCorrection = category(R.string.pinyin_correction)
+
+        // 拼音拼写纠错：只在输入无法解析为合法拼音时才给候选，合法输入一律不动
+        val pinyinCorrectionEnable = switch(
+            R.string.pinyin_correction_enable,
+            "pinyin_correction_enable",
+            true,
+            R.string.pinyin_correction_enable_summary
+        )
+
+        val pinyinCorrectionStrength = list(
+            R.string.pinyin_correction_strength,
+            "pinyin_correction_strength",
+            PinyinCorrectionStrength.standard,
+            PinyinCorrectionStrength,
+            listOf(
+                PinyinCorrectionStrength.conservative,
+                PinyinCorrectionStrength.standard,
+                PinyinCorrectionStrength.aggressive,
+            ),
+            listOf(
+                R.string.pinyin_correction_conservative,
+                R.string.pinyin_correction_standard,
+                R.string.pinyin_correction_aggressive,
+            )
+        ) { pinyinCorrectionEnable.getValue() }
+
+        // 模糊音：合法输入的查询扩展（zongguo -> 中国），与纠错是两件事，默认关闭
+        val pinyinFuzzyEnable = switch(
+            R.string.pinyin_fuzzy_enable,
+            "pinyin_fuzzy_enable",
+            false,
+            R.string.pinyin_fuzzy_enable_summary
+        ) { pinyinCorrectionEnable.getValue() }
 
         val titleEnglish = category(R.string.EnglishInput)
 

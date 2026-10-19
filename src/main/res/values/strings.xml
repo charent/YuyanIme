@@ -29,6 +29,15 @@
     <string name="setting_jian_fan">繁体输入</string>
     <string name="chinese_association">中文联想</string>
     <string name="chinese_association_date">中文联想显示时间</string>
+    <string name="pinyin_correction">拼音纠错</string>
+    <string name="pinyin_correction_enable">拼写纠错</string>
+    <string name="pinyin_correction_enable_summary">打错字母、漏字母、重复输入时给出纠正后的候选，正确输入不受影响</string>
+    <string name="pinyin_correction_strength">纠错力度</string>
+    <string name="pinyin_correction_conservative">保守</string>
+    <string name="pinyin_correction_standard">标准</string>
+    <string name="pinyin_correction_aggressive">激进</string>
+    <string name="pinyin_fuzzy_enable">模糊音</string>
+    <string name="pinyin_fuzzy_enable_summary">按口音扩展候选（z/zh、c/ch、s/sh、n/l、f/h、r/l、an/ang、en/eng、in/ing）</string>
     <string name="EnglishInput">英文输入</string>
     <string name="engish_full_keyboard">数字行</string>
     <string name="lx17_with_left_prefix">乱序17键盘显示拼音选择</string>

@@ -12,6 +12,7 @@ import com.yuyan.imemodule.callback.OnRecyclerItemClickListener
 import com.yuyan.imemodule.data.theme.ThemeManager.activeTheme
 import com.yuyan.imemodule.service.DictDecoder
 import com.yuyan.imemodule.singleton.EnvironmentSingleton.Companion.instance
+import com.yuyan.inputmethod.RimeEngine
 
 /**
  * 候选词界面适配器
@@ -31,7 +32,9 @@ class CandidatesAdapter(context: Context?) :
     }
 
     override fun onBindViewHolder(holder: SymbolHolder, position: Int) {
-        holder.textView.text = DictDecoder.candidates[position].text
+        val item = DictDecoder.candidates.getOrNull(position) ?: return
+        holder.textView.text =
+            if (item.comment == RimeEngine.CORRECTION_TAG) markCorrection(item.text) else item.text
         holder.textView.setOnClickListener { view: View? ->
             mOnItemClickListener?.onItemClick(this@CandidatesAdapter, view, position)
         }
