@@ -1,7 +1,5 @@
 package com.yuyan.imemodule.ui.fragment
 
-import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import androidx.annotation.DrawableRes
 import androidx.annotation.IdRes
@@ -11,10 +9,8 @@ import androidx.preference.PreferenceCategory
 import androidx.preference.PreferenceFragmentCompat
 import com.yuyan.imemodule.BuildConfig
 import com.yuyan.imemodule.R
-import com.yuyan.imemodule.application.CustomConstant
 import com.yuyan.imemodule.utils.addCategory
 import com.yuyan.imemodule.utils.addPreference
-import androidx.core.net.toUri
 import com.yuyan.imemodule.ui.setup.SetupActivity
 
 class ImeSettingsFragment : PreferenceFragmentCompat() {
@@ -92,10 +88,6 @@ class ImeSettingsFragment : PreferenceFragmentCompat() {
                     R.drawable.ic_menu_more_horiz,
                     R.id.action_settingsFragment_to_otherSettingsFragment
                 )
-                addPreference(R.string.feedback,"",
-                    R.drawable.ic_menu_edit,) {
-                    startActivity(Intent(Intent.ACTION_VIEW, CustomConstant.FEEDBACK_TXC_REPO.toUri()))
-                }
                 addDestinationPreference(
                     R.string.about,
                     R.drawable.ic_menu_feedback,

@@ -34,10 +34,11 @@ object CorrectionSession {
     private const val HARD_ITEMS = 5
 
     /**
-     * 软触发最多验证两个编码、总共给三条候选。真正会走到这里的输入已经「切不成合法音节」，
-     * 属于低频路径，多查一次换召回是划算的。
+     * 软触发最多验证三个编码、总共给三条候选。假设是按「音节数分组轮流取」排的，
+     * 同一个代价档里可能夹着别的切分（`xung` 的 `xun` / `xun'ga` / `xing`），
+     * 只查两个会漏掉真正的目标。
      */
-    private const val SOFT_CODES = 2
+    private const val SOFT_CODES = 3
     private const val SOFT_ITEMS = 3
 
     /** 模糊音一次只扩展一个变体，避免候选爆炸和无谓的翻译开销 */
@@ -46,9 +47,12 @@ object CorrectionSession {
 
     /** 近键变体：生成上限 / 探测上限 / 展示上限 / 探测时间预算 */
     private const val NEAR_KEY_VARIANTS = 8
-    private const val NEAR_KEY_PROBES = 6
+    private const val NEAR_KEY_PROBES = 8
     private const val NEAR_KEY_ITEMS = 2
-    private const val NEAR_KEY_BUDGET_MS = 20L
+    private const val NEAR_KEY_BUDGET_MS = 60L
+
+    /** 影子查询结果缓存：同一个变体编码在相邻几次按键里会反复出现，命中后不再碰引擎 */
+    private const val MAX_PROBE_CACHE = 64
 
     /** 纠错候选插在哪里 */
     enum class Placement {
@@ -83,10 +87,17 @@ object CorrectionSession {
             size > MAX_CACHE
     }
 
+    /** 影子查询结果缓存（含"查不到"）：变体编码在相邻按键里高度重复，能省掉大部分引擎往返 */
+    private val probeCache = object : LinkedHashMap<String, Any>(MAX_PROBE_CACHE, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Any>): Boolean =
+            size > MAX_PROBE_CACHE
+    }
+
     private val EMPTY = Any()
 
     fun reset() {
         cache.clear()
+        probeCache.clear()
         lastRawCode = ""
     }
 
@@ -207,7 +218,9 @@ object CorrectionSession {
         if (variants.isEmpty()) return null
 
         val useFrequency = WordFrequency.isReady
-        val baseFrequency = WordFrequency.freq(originalWord)
+        // 当前首位候选是单字时（说明这个词根本没成词）不能拿它的词频当基准：
+        // 「比」这种单字词频很高，会把「你好」这类真正的词压下去
+        val baseFrequency = if (cjkCount(originalWord) >= 2) WordFrequency.freq(originalWord) else 0
 
         val started = SystemClock.elapsedRealtime()
         // (文本, 词频, 词库支持度)
@@ -266,11 +279,18 @@ object CorrectionSession {
 
         if (!WordFrequency.isReady) return out.take(limit)
 
-        // 稳定排序：词频高的在前，同频保持「代价优先」的原始顺序
+        // 词频闸：丢掉词表里没有的组合（「辣死公」这种由音节硬拼出来的），
+        // 排序规则是「成词优先 > 词频高 > 原代价顺序」——用户打了两三个音节时，
+        // 多字词比单字更像目标；只有单音节输入才会变成纯词频比较。
         val known = out.filter { WordFrequency.freq(it) > 0 }
-            .sortedByDescending { WordFrequency.freq(it) }
-        val result = if (known.isEmpty()) out else known
-        return result.take(limit).ifEmpty { null }
+        val pool = if (known.isEmpty()) out else known
+        return pool
+            .sortedWith(
+                compareByDescending<String> { if (cjkCount(it) >= 2) 1 else 0 }
+                    .thenByDescending { WordFrequency.freq(it) }
+            )
+            .take(limit)
+            .ifEmpty { null }
     }
 
     private fun buildFuzzy(raw: String, existingTexts: Collection<String>): List<String> {
@@ -292,17 +312,24 @@ object CorrectionSession {
      * 用纠正后的编码做一次影子查询，拿完候选立刻还原组合串。
      * `replaceRimeKey(caret, len, key)` 的语义是「把组合串的 [caret, caret+len) 换成 key」，
      * 全串替换就是 `(0, 全串长度)`；这条链路 `KeyRecordStack.replacePinyinWithT9Keys` 已经在用。
-     * 但全串替换是这个方案唯一的未知项（设计文档 §8），所以再备一条「清空重放」的兜底路径。
+     * 「清空重放」只作为还原组合串时的兜底（成本高：最多 24 次词典查询），不再参与探测。
+     * 结果（含查不到）按编码缓存，相邻按键里同一个变体编码反复出现时不必再碰引擎。
      */
     private fun probe(code: String): ProbeData? {
+        val cached = probeCache[code]
+        if (cached != null) return if (cached === EMPTY) null else cached as ProbeData
+
         val saved = Rime.compositionText
         if (saved.isEmpty()) return null
 
+        // 两条路都要留：组合串带自动分隔符时（l's'o'gong），整串替换 replaceKey 会换不过去，
+        // 只有「清空重放」能落到目标编码上——去掉它纠错会整块失效（实测 2026-10-19 23:55）。
+        // 重放最多 24 次词典查询，所以纠错已改成停顿后再算（RimeEngine.scheduleCorrection），不占按键路径。
         val queried = replaceComposition(code) || replayComposition(code)
         if (!queried) {
             // 两条路都没能把组合串换成目标编码：还原成用户原来的输入，放弃这次验证
             Log.w(TAG, "probe failed: composition=$code unfetchable, saved=$saved")
-            replayComposition(saved)
+            restoreComposition(saved)
             return null
         }
 
@@ -323,6 +350,8 @@ object CorrectionSession {
         } finally {
             restoreComposition(saved)
         }
+        // 只缓存「查成功」的结果：查询本身失败（换不过去 / 抛异常）是临时状态，缓存了会让这条编码再也不纠
+        if (texts != null) probeCache[code] = texts
         return texts
     }
 

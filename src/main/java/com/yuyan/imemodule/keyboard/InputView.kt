@@ -78,6 +78,7 @@ class InputView(context: Context, private val service: ImeService) : IKeyboardVi
     private val mChoiceNotifier = ChoiceNotifier()
     var mSkbRoot: RelativeLayout
     var mSkbCandidatesBarView: CandidatesBar
+    private lateinit var mCandidatesGapView: CandidatesGapView
     private var mHoderLayoutLeft: LinearLayout
     private var mHoderLayoutRight: LinearLayout
     private lateinit var mOnehandHoderLayout: LinearLayout
@@ -109,6 +110,13 @@ class InputView(context: Context, private val service: ImeService) : IKeyboardVi
         mSkbRoot = LayoutInflater.from(context).inflate(R.layout.sdk_skb_container, this, false) as RelativeLayout
         addView(mSkbRoot)
         mSkbCandidatesBarView = mSkbRoot.findViewById(R.id.candidates_bar)
+        mCandidatesGapView = mSkbRoot.findViewById(R.id.candidates_bottom_gap)
+        // 候选词栏与键盘之间的间隔在视觉上保留，但点击落在这里时仍然上屏正上方的候选词
+        mCandidatesGapView.onGapTouch = { x ->
+            mSkbCandidatesBarView.commitCandidateAt(
+                x + mCandidatesGapView.left - mSkbCandidatesBarView.left
+            )
+        }
         mHoderLayoutLeft = mSkbRoot.findViewById(R.id.ll_skb_holder_layout_left)
         mHoderLayoutRight = mSkbRoot.findViewById(R.id.ll_skb_holder_layout_right)
         mInputKeyboardContainer = mSkbRoot.findViewById(R.id.ll_input_keyboard_container)
@@ -618,6 +626,7 @@ class InputView(context: Context, private val service: ImeService) : IKeyboardVi
             initView(context)
             if (extra != null) {
                 DataBaseKT.instance.phraseDao().deleteByContent(extra.content)
+                CustomEngine.invalidatePhraseCache()
                 mAddPhrasesLayout.setExtraData(extra)
             } else {
                 mAddPhrasesLayout.clearPhrasesContent()

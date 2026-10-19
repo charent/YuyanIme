@@ -305,7 +305,10 @@ class CandidatesBar(context: Context?, attrs: AttributeSet?) : RelativeLayout(co
         activeCandNo = 0
         mCandidatesAdapter.activeCandidates(activeCandNo)
         mCandidatesAdapter.notifyChanged()
-        mCandidatesMenuAdapter.notifyChanged()
+        // 菜单栏在候选态是隐藏的：跟着刷新只会每敲一个键就重绑一次图标，白耗主线程
+        if (::mCandidatesMenuContainer.isInitialized && mCandidatesMenuContainer.visibility == VISIBLE) {
+            mCandidatesMenuAdapter.notifyChanged()
+        }
     }
 
     /**
@@ -370,6 +373,37 @@ class CandidatesBar(context: Context?, attrs: AttributeSet?) : RelativeLayout(co
         val heightMeasure = MeasureSpec.makeMeasureSpec(instance.heightForCandidatesArea, MeasureSpec.EXACTLY)
         val widthMeasure = MeasureSpec.makeMeasureSpec(instance.skbWidth, MeasureSpec.EXACTLY)
         super.onMeasure(widthMeasure, heightMeasure)
+    }
+
+    /**
+     * 把「候选词栏下方间隔」里的一次点击交给候选词处理。
+     *
+     * 间隔本身只是一条空白，用户点候选词时手指压线落到间隔里就会「点了没反应」。
+     * 这里按横坐标找到正上方的候选词项——命中范围就是候选词自身的宽度，所以
+     * 一个字、两个字的候选词各自能吃到自己下方的那一段间隔。
+     *
+     * @param x 相对本视图左上角的横坐标
+     * @return true 表示点中了某个候选词并已上屏
+     */
+    fun commitCandidateAt(x: Float): Boolean {
+        if (!::mCvListener.isInitialized || !::mRVCandidates.isInitialized) return false
+        if (!::mCandidatesDataContainer.isInitialized) return false
+        if (mCandidatesDataContainer.visibility != VISIBLE) return false
+        if (mRVCandidates.visibility != VISIBLE || mRVCandidates.childCount == 0) return false
+        // 候选词栏与 RecyclerView 之间可能隔着拼音行、侧边箭头，统一换算到 RecyclerView 坐标系
+        val barLocation = IntArray(2).also { getLocationInWindow(it) }
+        val listLocation = IntArray(2).also { mRVCandidates.getLocationInWindow(it) }
+        val localX = x + barLocation[0] - listLocation[0]
+        for (index in 0 until mRVCandidates.childCount) {
+            val child = mRVCandidates.getChildAt(index)
+            if (child.height <= 0) continue
+            if (localX < child.left || localX > child.right) continue
+            val position = mRVCandidates.getChildAdapterPosition(child)
+            if (position == RecyclerView.NO_POSITION) return false
+            mCvListener.onClickChoice(position)
+            return true
+        }
+        return false
     }
 
     private fun showViewVisibility(candidatesContainer: View) {

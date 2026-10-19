@@ -88,7 +88,7 @@ class ImeService : InputMethodService() {
     override fun onCreateCandidatesView(): View {
         if(!::candidateView.isInitialized)candidateView = CandidateView(baseContext, this)
         if(isHardwareKeyboard) mInputView = candidateView
-        currentInputConnection.requestCursorUpdates(InputConnection.CURSOR_UPDATE_MONITOR)
+        currentInputConnection?.requestCursorUpdates(InputConnection.CURSOR_UPDATE_MONITOR)
         return candidateView
     }
 
@@ -151,6 +151,12 @@ class ImeService : InputMethodService() {
     }
 
     override fun setInputView(view: View) {
+        // 输入法窗口重建（切换输入框、分屏/悬浮、旋屏、被系统回收后重新拉起）时，
+        // 系统可能把还挂在旧窗口上的同一个视图再传进来。这时 InputMethodService.setInputView
+        // 内部的 addView 会抛 "The specified child already has a parent"，
+        // 表现就是「点输入框没反应，再点一次才弹出键盘」（第一次把输入法进程打崩了）。
+        // 交回系统之前先摘掉旧父容器，让这次 addView 一定能成功。
+        (view.parent as? ViewGroup)?.removeView(view)
         super.setInputView(view)
         val layoutParams = view.layoutParams
         if (layoutParams != null && layoutParams.height != ViewGroup.LayoutParams.MATCH_PARENT) {
@@ -198,7 +204,8 @@ class ImeService : InputMethodService() {
     }
 
     override fun onWindowShown() {
-        mInputView.onWindowShown()
+        // 物理键盘模式下只创建候选视图，此时 mInputView 可能还没赋值，直接调用会 UninitializedPropertyAccessException
+        if (::mInputView.isInitialized) mInputView.onWindowShown()
         super.onWindowShown()
         hideSystemImeSwitchButton()
     }

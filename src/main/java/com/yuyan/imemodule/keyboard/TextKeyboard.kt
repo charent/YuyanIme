@@ -44,6 +44,7 @@ open class TextKeyboard(context: Context?) : BaseKeyboardView(context){
     private var keyRadius = 0
     private var keyShadowOffset = 0 // 键帽底部投影的下移量（px）
     private val mShadowDrawable = GradientDrawable() // 复用的投影图层，避免每次绘制都新建对象
+    private val mKeyDrawable = GradientDrawable() // 复用的键帽底色图层（每帧每个按键都要画一次）
     private var keyboardFontBold = false
     private var keyboardSymbol = false
     private var keyboardMnemonic = false
@@ -170,7 +171,8 @@ open class TextKeyboard(context: Context?) : BaseKeyboardView(context){
      * @param keyYMargin 按键上下边间距
      */
     private fun drawSoftKey(canvas: Canvas, softKey: SoftKey, keyXMargin: Int, keyYMargin: Int) {
-        val bg = GradientDrawable()
+        // 复用同一个 drawable：每帧为每个按键 new 一个 GradientDrawable 会在快速输入时堆出大量短命对象
+        val bg = mKeyDrawable
         bg.shape = GradientDrawable.RECTANGLE
         bg.cornerRadius = keyRadius.toFloat() // 设置圆角半径
         val keyLeft = softKey.mLeft + keyXMargin
@@ -275,7 +277,8 @@ open class TextKeyboard(context: Context?) : BaseKeyboardView(context){
         if (isLangKey) {
             // 主字（当前语言）大、副字（可切换语言）小；主字的字重跟随「键盘字母加粗」开关，与其他键帽字母保持一致
             mPaint.color = textColor
-            val mainTypeface = if (keyboardFontBold) TYPEFACE_BOLD else TYPEFACE_MEDIUM
+            // 语言键属于功能键，未加粗时走细体，与「分词 / 符号 / 123」保持一致
+            val mainTypeface = if (keyboardFontBold) TYPEFACE_BOLD else TYPEFACE_REGULAR
             val subTypeface = TYPEFACE_REGULAR
             // 主字跟随实际输入语言：中文输入时「中」大，英文输入时「EN」大
             val langIsEnglish = InputModeSwitcher.isEnglish
@@ -333,8 +336,14 @@ open class TextKeyboard(context: Context?) : BaseKeyboardView(context){
             keyIcon.draw(canvas)
         } else if (!TextUtils.isEmpty(keyLabel)) { //Label位于中间
             mPaint.color = textColor
-            // 系统字体族固定为 sans-serif；不加粗时用 medium 字重，避免常规字重在小屏上显得过细
-            mPaint.typeface = if (keyboardFontBold) TYPEFACE_BOLD else TYPEFACE_MEDIUM
+            // 系统字体族固定为 sans-serif。字重分两档：
+            // - 单个字母/数字（Q/W/1…）用 medium，在小屏上更清晰；
+            // - 功能键（分词、符号、中/EN、123、返回…）用细体，避免整行都是中等字重显得沉重。
+            mPaint.typeface = when {
+                keyboardFontBold -> TYPEFACE_BOLD
+                isStandaloneLabel(keyLabel) -> TYPEFACE_REGULAR
+                else -> TYPEFACE_MEDIUM
+            }
             var labelSize = keyTextSizeF
             mPaint.textSize = labelSize
             var labelWidth = mPaint.measureText(keyLabel)

@@ -199,7 +199,7 @@ object PinyinCorrector {
                             append(if (i == syllableIndex) replaced else value)
                         }
                     }
-                    val score = nearKeyScore(typed, neighbour, indexInSyllable, syllableIndex, syllables.size)
+                    val score = nearKeyScore(typed, neighbour, indexInSyllable)
                     val previous = variants[variantCode]
                     if (previous == null || score > previous) variants[variantCode] = score
                 }
@@ -214,22 +214,17 @@ object PinyinCorrector {
 
     /**
      * 便宜的启发式打分，只用来决定「先探测哪几个」（探测次数有预算）。
-     * 真正决定展示顺序的是词库里的候选数量（见 CorrectionSession.buildNearKey）。
+     * 真正决定展示顺序的是词频（见 CorrectionSession.buildNearKey）。
+     *
+     * 注意这里**不**按「靠后音节」加权：误按可能发生在任何位置（`bihao` 的 b→n 就在第一个音节），
+     * 按位置加权会让某些输入永远轮不到探测预算。
      */
-    private fun nearKeyScore(
-        typed: Char,
-        neighbour: Char,
-        indexInSyllable: Int,
-        syllableIndex: Int,
-        syllableCount: Int,
-    ): Float {
+    private fun nearKeyScore(typed: Char, neighbour: Char, indexInSyllable: Int): Float {
         var score = 0f
         // 音节首字母（声母）按错最常见
         if (indexInSyllable == 0) score += 2f
         // 同一行左右相邻比上下、斜向更常见
         score += (1.2f - SyllableTable.keyDistance(typed, neighbour)).coerceAtLeast(0f)
-        // 越靠后的音节越容易打错
-        if (syllableCount > 1) score += 0.4f * syllableIndex / (syllableCount - 1)
         // 元音换元音 / 辅音换辅音更可信
         if ((typed in VOWELS) == (neighbour in VOWELS)) score += 0.15f
         return score

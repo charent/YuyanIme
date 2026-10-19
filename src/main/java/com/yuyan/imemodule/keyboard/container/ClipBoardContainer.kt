@@ -30,6 +30,7 @@ import com.yuyan.imemodule.keyboard.InputView
 import com.yuyan.imemodule.keyboard.KeyboardManager
 import com.yuyan.imemodule.manager.layout.CustomGridLayoutManager
 import com.yuyan.imemodule.singleton.EnvironmentSingleton.Companion.instance
+import com.yuyan.inputmethod.CustomEngine
 import splitties.dimensions.dp
 import splitties.views.textResource
 import kotlin.math.ceil
@@ -177,6 +178,7 @@ class ClipBoardContainer(context: Context, inputView: InputView) : BaseContainer
                     inputView.onSettingsMenuClick(SkbMenuMode.AddPhrases, DataBaseKT.instance.phraseDao().queryByContent(content))
                 } else if(menuBridge.position == 1){
                     DataBaseKT.instance.phraseDao().deleteByContent(content)
+                    CustomEngine.invalidatePhraseCache()
                     showClipBoardView(SkbMenuMode.Phrases)
                 }
             }

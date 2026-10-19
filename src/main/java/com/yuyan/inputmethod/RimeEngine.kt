@@ -1,11 +1,14 @@
 package com.yuyan.inputmethod
 
+import android.os.Handler
+import android.os.Looper
 import android.view.KeyEvent
 import com.yuyan.imemodule.application.CustomConstant
 import com.yuyan.imemodule.application.Launcher
 import com.yuyan.imemodule.manager.InputModeSwitcher
 import com.yuyan.imemodule.manager.UserDictManager
 import com.yuyan.imemodule.prefs.AppPrefs
+import com.yuyan.imemodule.service.DictDecoder
 import com.yuyan.imemodule.utils.StringUtils
 import com.yuyan.inputmethod.core.CandidateListItem
 import com.yuyan.inputmethod.core.Rime
@@ -52,6 +55,19 @@ object RimeEngine {
 
     private var charCase = 0x0000
 
+    /** 延迟纠错：连续按键时不断取消上一次，停下后再算（见 [scheduleCorrection]） */
+    private val correctionHandler = Handler(Looper.getMainLooper())
+    private var pendingCorrection: Runnable? = null
+
+    /**
+     * 停顿多久之后才做一次纠错。影子查询（尤其是「清空重放」兜底）单次可达几十毫秒，
+     * 放在按键路径上就是「打字突然卡一下」；120ms 覆盖不掉连续输入，只在真正停顿后算一次。
+     */
+    private const val CORRECTION_DELAY_MS = 120L
+
+    /** 引擎是否已经启动过：Rime.startup 是整套引擎装配，重复调用会让按键明显停顿 */
+    private var engineStarted = false
+
     /**
      * 一次输入过程中用户选过的候选，用于判断是否属于"手动纠正"并落库到用户词库。
      * code 取第一次选择前的组合串（Rime 逐段消费组合串，第一次的快照天然就是整串编码）。
@@ -61,12 +77,21 @@ object RimeEngine {
 
     fun init() {
         Rime.getInstance(false)
+        engineStarted = true
     }
 
     fun selectSchema(mod: String): Boolean {
         keyRecordStack.clear()
         charCase = MASK_CASE_LOWER
-        Rime.startup(Launcher.instance.context, false)
+        if (!engineStarted) {
+            Rime.startup(Launcher.instance.context, false)
+            engineStarted = true
+        } else if (Rime.getCurrentRimeSchema() == mod) {
+            // 已经在这个方案上（例如反复点「中/EN」「123」再切回来），不必再切一次词典
+            return true
+        }
+        // 换方案等于换词典，影子查询的缓存结果不再可信
+        CorrectionSession.reset()
         return Rime.selectSchema(mod)
     }
 
@@ -95,6 +120,7 @@ object RimeEngine {
     }
 
     fun selectCandidate(index: Int): String? {
+        cancelCorrection()
         val picked = showCandidates.getOrNull(index) ?: return null
         val rimeIndex = rimeIndexes.getOrNull(index) ?: -1
         if (rimeIndex < 0) return null // 自定义候选由 InputView 直接提交，不进 Rime
@@ -185,6 +211,7 @@ object RimeEngine {
     }
 
     fun reset() {
+        cancelCorrection()
         showCandidates = emptyList()
         rimeIndexes = IntArray(0)
         customPhraseSize = 0
@@ -229,7 +256,11 @@ object RimeEngine {
         UserDictManager.learn(code, text, Rime.getCurrentRimeSchema())
     }
 
-    fun destroy() = Rime.destroy()
+    fun destroy() {
+        cancelCorrection()
+        engineStarted = false
+        Rime.destroy()
+    }
 
     /** 引擎是否仍处于组合态。与"候选是否为空"不同：i / u / v 这类编码有编码、没候选。 */
     val hasComposition: Boolean
@@ -261,6 +292,7 @@ object RimeEngine {
     private fun updateCandidatesOrCommitText(): String? {
         val rimeCommit = Rime.getRimeCommit()
         if (rimeCommit != null) {
+            cancelCorrection()
             flushLearning()
             keyRecordStack.clear()
             preCommitText = rimeCommit.commitText
@@ -356,10 +388,41 @@ object RimeEngine {
         }
         showComposition = composition
         preCommitText = ""
-        // 纠错只在「输入不可解析 / 明显多打」时介入，正常输入一律不动（见设计文档 4.2）。
-        // 放在最后做：影子查询会临时改写再还原组合串，不能让上面的拼音展示/大小写处理读到中间态。
-        if (compositionText.isNotBlank()) applyPinyinCorrection(compositionText, candidates, candidateTotal)
+        // 纠错只做「影子查询」：临时改写组合串、取候选、再还原，单次成本远高于普通按键，
+        // 同步做会把连续输入卡住（用户感知就是"打字突然卡一下"）。这里改成停顿后再算：
+        // 按键永远优先，纠错结果晚几十毫秒补进候选栏。
+        scheduleCorrection(compositionText, candidates, candidateTotal)
         return null
+    }
+
+    /**
+     * 安排一次延迟纠错。任何一次新的按键都会取消上一次待执行的纠错，
+     * 因此连续输入时只有停下来那一刻才会真正去查。
+     */
+    private fun scheduleCorrection(
+        compositionText: String,
+        candidates: List<CandidateListItem>,
+        candidateTotal: Int,
+    ) {
+        cancelCorrection()
+        if (compositionText.isBlank()) return
+        if (!AppPrefs.getInstance().input.pinyinCorrectionEnable.getValue()) return
+        val task = Runnable {
+            pendingCorrection = null
+            // 停顿期间又按了键、选了词、切换了方案：这次纠错的上下文已经失效
+            if (Rime.compositionText != compositionText) return@Runnable
+            if (showCandidates.isEmpty()) return@Runnable
+            if (!applyPinyinCorrection(compositionText, candidates, candidateTotal)) return@Runnable
+            // 纠错候选补进列表后主动推一次，界面自己会刷新
+            DictDecoder.candidatesLiveData.value = showCandidates
+        }
+        pendingCorrection = task
+        correctionHandler.postDelayed(task, CORRECTION_DELAY_MS)
+    }
+
+    private fun cancelCorrection() {
+        pendingCorrection?.let { correctionHandler.removeCallbacks(it) }
+        pendingCorrection = null
     }
 
     /**
@@ -372,19 +435,21 @@ object RimeEngine {
      * 「提升」语义：如果纠错词在 Rime 的候选里本来就存在（`beijingg` 的「北京」就在第 5 位），
      * 会把它从原位置删掉、换成带标记的副本放到纠错位置，否则用户会觉得「纠错没生效」。
      * 插入项在 [rimeIndexes] 里记 -1，选词由 `InputView` 直接提交文本，不进 Rime。
+     *
+     * @return 是否真的改写了候选列表（供调用方决定要不要刷新界面）
      */
     private fun applyPinyinCorrection(
         compositionText: String,
         rimeCandidates: List<CandidateListItem>,
         candidateTotal: Int,
-    ) {
+    ): Boolean {
         val correction = CorrectionSession.correct(
             compositionText,
             rimeCandidates,
             showCandidates.map { it.text },
             candidateTotal,
-        ) ?: return
-        if (correction.texts.isEmpty()) return
+        ) ?: return false
+        if (correction.texts.isEmpty()) return false
 
         val items = correction.texts.map { CandidateListItem(CORRECTION_TAG, it) }
         val at = when (correction.placement) {
@@ -417,6 +482,7 @@ object RimeEngine {
         rimeIndexes = mergedIndexes.toIntArray()
         // 插到自定义候选之前时，首位判定要跟着挪
         if (at <= customPhraseSize) customPhraseSize += items.size
+        return true
     }
 
     /**
