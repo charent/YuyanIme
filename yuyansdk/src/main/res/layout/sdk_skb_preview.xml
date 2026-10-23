@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:layout_alignParentBottom="true"
+    android:layout_alignParentEnd="true">
+    <!--候选词视图，即 键盘顶部分的视图，分情况显示候选词，或者显示顶部操作栏-->
+    <com.yuyan.imemodule.view.CandidatesBar
+        android:id="@+id/candidates_bar"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"/>
+    <!--候选词栏与键盘之间的间隔，与输入法界面保持一致-->
+    <com.yuyan.imemodule.keyboard.CandidatesGapView
+        android:id="@+id/candidates_bottom_gap"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_below="@+id/candidates_bar"/>
+    <!--除顶部外的下面其他容器视图，当标点符号视图显示时会遮挡住此视图-->
+    <com.yuyan.imemodule.keyboard.container.InputViewParent
+        android:id="@+id/skb_input_keyboard_view"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_below="@+id/candidates_bottom_gap">
+    </com.yuyan.imemodule.keyboard.container.InputViewParent>
+</RelativeLayout>

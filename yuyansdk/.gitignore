@@ -1,0 +1,22 @@
+*.iml
+.gradle/
+local.properties
+.DS_Store
+captures/
+.externalNativeBuild
+.idea/
+gradlew
+gradlew.bat
+gradle/wrapper/
+/build/.transforms/
+/build/generated/
+/build/intermediates/
+/build/kotlin/
+/build/outputs/
+/build/tmp/
+/build/kspCaches/
+
+# 原生引擎构建中间产物（由 src/main/cpp/scripts/ 下的脚本生成，体积大不入库）
+/src/main/cpp/native-build/
+# 依赖静态库（约 500 MB/4 ABI），clone 后执行 build-deps.ps1 生成
+/src/main/cpp/prebuilt/

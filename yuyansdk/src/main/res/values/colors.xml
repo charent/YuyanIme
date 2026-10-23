@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="skb_elevation_color">#bfbfbf</color>
+    <color name="red_400">#EF5350</color>
+    <color name="color_gray">#B4B4B4</color>
+
+    <!-- 品牌主色：RGB(15, 115, 255)，设置页与默认键盘主题统一使用 -->
+    <color name="brand_primary">#FF0F73FF</color>
+    <color name="brand_primary_dark">#FF0A5BD0</color>
+
+    <color name="x_recycler_color_text_gray">#FF777777</color>
+    <color name="x_recycler_color_loading_color1">#55777777</color>
+    <color name="x_recycler_color_loading_color2">#B1777777</color>
+    <color name="x_recycler_color_loading_color3">#FF777777</color>
+</resources>
