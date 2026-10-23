@@ -47,31 +47,51 @@ Info "submodule : $Sdk"
 # ---------------------------------------------------------------- preflight
 Step 'Preflight checks'
 
-if (-not (Test-Path (Join-Path $Sdk '.git'))) { Die 'yuyansdk submodule not found' }
+$SubmodulePresent = Test-Path (Join-Path $Sdk '.git')
+$SubTree = $null
+if ($SubmodulePresent) {
+    # normal mode: submodule worktree exists
+    $dirtySub = git -C $Sdk status --porcelain --untracked-files=no
+    if ($dirtySub) { Die "yuyansdk has uncommitted changes:`n$dirtySub" }
+    Ok 'yuyansdk tracked tree is clean'
 
-$dirtyMain = git status --porcelain --untracked-files=no
-if ($dirtyMain) { Die "main repo has uncommitted changes:`n$dirtyMain" }
-Ok 'main repo tracked tree is clean'
+    Info 'fetching yuyansdk origin to verify everything is pushed...'
+    git -C $Sdk fetch origin --quiet
+    if ($LASTEXITCODE -ne 0) { Die 'git fetch origin failed inside yuyansdk (check network / ssh)' }
 
-$dirtySub = git -C $Sdk status --porcelain --untracked-files=no
-if ($dirtySub) { Die "yuyansdk has uncommitted changes:`n$dirtySub" }
-Ok 'yuyansdk tracked tree is clean'
+    $ahead = @(git -C $Sdk rev-list --count 'origin/master..master')
+    if ($LASTEXITCODE -ne 0) { Die 'cannot compare yuyansdk master with origin/master' }
+    if ([int]$ahead[0] -gt 0) {
+        Die ("yuyansdk has {0} unpushed commit(s). Push charent/yuyansdk first - this is the only safety net for the history." -f [int]$ahead[0])
+    }
+    Ok 'yuyansdk master is fully pushed to origin'
 
-Info 'fetching yuyansdk origin to verify everything is pushed...'
-git -C $Sdk fetch origin --quiet
-if ($LASTEXITCODE -ne 0) { Die 'git fetch origin failed inside yuyansdk (check network / ssh)' }
+    $SubSha = (git -C $Sdk rev-parse HEAD).Trim()
+    $SubTree = (git -C $Sdk rev-parse 'master^{tree}').Trim()
+} else {
+    # resume mode: worktree was removed earlier/manually, gitlink must still be in index
+    $gitlink = @(git ls-files -s yuyansdk | Select-String '^160000')
+    if ($gitlink.Count -eq 0) { Die 'yuyansdk worktree absent and gitlink not in index - nothing to resume; restore with: git submodule update --init yuyansdk' }
+    $SubSha = (($gitlink[0].ToString()) -split '\s+')[1].Trim()
+    Info 'yuyansdk worktree absent but gitlink present - RESUME MODE'
 
-$ahead = @(git -C $Sdk rev-list --count 'origin/master..master')
-if ($LASTEXITCODE -ne 0) { Die 'cannot compare yuyansdk master with origin/master' }
-if ([int]$ahead[0] -gt 0) {
-    Die ("yuyansdk has {0} unpushed commit(s). Push charent/yuyansdk first - this is the only safety net for the history." -f [int]$ahead[0])
+    # push check without a worktree: compare gitlink sha with the remote branch head
+    $subUrl = (git config -f .gitmodules submodule.yuyansdk.url).Trim()
+    $remoteHead = (git ls-remote $subUrl refs/heads/master)
+    if ($LASTEXITCODE -ne 0 -or -not $remoteHead) { Die "cannot check remote state of $subUrl" }
+    $remoteSha = ($remoteHead -split '\s+')[0].Trim()
+    if ($remoteSha -ne $SubSha) {
+        Die "remote master ($remoteSha) != gitlink ($SubSha) - push charent/yuyansdk first"
+    }
+    Ok 'remote master matches gitlink sha - history is safe on origin'
 }
-Ok 'yuyansdk master is fully pushed to origin'
-
-$SubSha = (git -C $Sdk rev-parse HEAD).Trim()
-$SubTree = (git -C $Sdk rev-parse 'master^{tree}').Trim()
 Info "submodule HEAD : $SubSha"
-Info "submodule tree : $SubTree"
+if ($SubTree) { Info "submodule tree : $SubTree" }
+
+# main repo must be clean, except the not-yet-staged yuyansdk deletion in resume mode
+$dirtyMain = @(git status --porcelain --untracked-files=no | Where-Object { $_ -notmatch '^\s*[D]+\s+yuyansdk\s*$' })
+if ($dirtyMain.Count -gt 0) { Die ("main repo has uncommitted changes:`n" + ($dirtyMain -join "`n")) }
+Ok 'main repo tracked tree is clean'
 
 # ---------------------------------------------------------------- branch
 Step "Create working branch '$Branch'"
@@ -100,10 +120,20 @@ New-Item -ItemType Directory -Force -Path $BackupRoot | Out-Null
 Info "backup dir : $BackupRoot"
 
 $Cpp = Join-Path $Sdk 'src\main\cpp'
-CopyTree (Join-Path $Cpp 'native-build') (Join-Path $BackupRoot 'native-build')
-Ok 'native-build backed up (sources + build dirs)'
-CopyTree (Join-Path $Cpp 'prebuilt') (Join-Path $BackupRoot 'prebuilt')
-Ok 'prebuilt backed up (cross-compiled static libs)'
+$cachePairs = @(
+    @{ Src = Join-Path $Cpp 'native-build'; Dst = Join-Path $BackupRoot 'native-build'; Label = 'native-build (sources + build dirs)' },
+    @{ Src = Join-Path $Cpp 'prebuilt';      Dst = Join-Path $BackupRoot 'prebuilt';      Label = 'prebuilt (cross-compiled static libs)' }
+)
+foreach ($c in $cachePairs) {
+    if (Test-Path $c.Src) {
+        CopyTree $c.Src $c.Dst
+        Ok ("backed up " + $c.Label)
+    } elseif (Test-Path $c.Dst) {
+        Ok ((($c.Label) + ' already in backup (source absent from an earlier run) - reusing backup'))
+    } else {
+        Die ($c.Label + ' missing both in repo and backup - cannot proceed safely')
+    }
+}
 
 $SubGitBackup = Join-Path $BackupRoot 'yuyansdk.git'
 CopyTree (Join-Path $Repo '.git\modules\yuyansdk') $SubGitBackup
@@ -125,14 +155,39 @@ $BackupSha = (git -C $SubGitBackup rev-parse HEAD).Trim()
 if ($BackupSha -ne $SubSha) { Die "backup gitdir HEAD ($BackupSha) != submodule HEAD ($SubSha)" }
 Ok "backup gitdir resolves $SubSha"
 
+if (-not $SubTree) {
+    $SubTree = (git -C $SubGitBackup rev-parse 'master^{tree}').Trim()
+    Info "submodule tree : $SubTree (resolved from backup gitdir)"
+}
+
 # ---------------------------------------------------------------- remove submodule
 Step 'Remove submodule'
-git submodule deinit -f yuyansdk
-if ($LASTEXITCODE -ne 0) { Die 'git submodule deinit failed' }
-Ok 'deinit done (worktree cleared - caches are safe in the backup)'
+if (Test-Path $Sdk) {
+    git submodule deinit -f yuyansdk
+    if ($LASTEXITCODE -ne 0) {
+        Info 'deinit reported an error (possibly already unregistered) - continuing'
+    }
+    if (Test-Path $Sdk) {
+        # hard-delete leftovers: robocopy empty-mirror is the fastest way on Windows
+        Info 'worktree still present - force-removing (may take a while on HDD)'
+        New-Item -ItemType Directory -Force -Path "$env:TEMP\empty-for-delete" | Out-Null
+        robocopy "$env:TEMP\empty-for-delete" $Sdk /MIR /NFL /NDL /NJH /NJS /NP /R:1 /W:1 | Out-Null
+        Remove-Item -Recurse -Force $Sdk -ErrorAction SilentlyContinue
+        if (Test-Path $Sdk) { Die 'could not remove yuyansdk worktree (files locked by another process?) - close IDEs and re-run' }
+        Ok 'worktree force-removed'
+    } else {
+        Ok 'deinit done (worktree cleared - caches are safe in the backup)'
+    }
+} else {
+    Info 'yuyansdk worktree already absent - skipping deinit'
+}
 
 git rm -f yuyansdk
-if ($LASTEXITCODE -ne 0) { Die 'git rm yuyansdk failed' }
+if ($LASTEXITCODE -ne 0) {
+    Info 'git rm yuyansdk failed (missing worktree?) - trying index-only removal'
+    git rm -f --cached yuyansdk
+    if ($LASTEXITCODE -ne 0) { Die 'git rm yuyansdk failed' }
+}
 git rm -f .gitmodules
 if ($LASTEXITCODE -ne 0) { Die 'git rm .gitmodules failed' }
 
