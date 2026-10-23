@@ -17,13 +17,28 @@ object DictDecoder {
     var isAssociate = false
 
     /**
+     * 候选列表的"代"：**整表替换**时 +1，**追加**时不变。
+     *
+     * 视图据此区分两种刷新：代变了说明是新的一次输入（可以全量重绑、滚回顶部）；
+     * 代没变但条数变多，说明只是往后追加了一批，应该 `notifyItemRangeInserted`
+     * ——`notifyDataSetChanged` 会重绑所有可见项并打断正在进行的滑动，滚到边界时每加一批就卡一下。
+     */
+    var generation: Int = 0
+        private set
+
+    private fun publish(list: List<CandidateListItem>) {
+        generation++
+        candidatesLiveData.value = list
+    }
+
+    /**
      * 重置候选词
      */
     fun reset() {
         isAssociate = false
         activeCandidate = 0
         activeCandidateBar = 0
-        candidatesLiveData.value = emptyList()
+        publish(emptyList())
     }
 
     val isCandidatesEmpty: Boolean
@@ -85,6 +100,7 @@ object DictDecoder {
     val nextPageCandidates: Int   // 获取下一页的候选词
         get() {
             val fresh = RimeEngine.appendNextPage()
+            // 追加不算换"代"：视图会走增量插入，不重绑、不动滚动位置
             if (fresh > 0) candidatesLiveData.postValue(RimeEngine.showCandidates)
             return fresh
         }
@@ -102,7 +118,7 @@ object DictDecoder {
             candidate = if (newCandidates.isNotEmpty()) RimeEngine.preCommitText
             else if (candId in 0..<candidateSize) RimeEngine.preCommitText.ifEmpty { candidatesLiveData.value!![candId].text }
             else ""
-            candidatesLiveData.value = newCandidates
+            publish(newCandidates)
         } else {  // 手写
             candidate = if (candId in 0..<candidateSize) candidatesLiveData.value!![candId].text  else ""
             reset()
@@ -116,7 +132,15 @@ object DictDecoder {
     fun updateDecodingCandidate() {
         activeCandidate = 0
         activeCandidateBar = 0
-        candidatesLiveData.value = RimeEngine.showCandidates
+        publish(RimeEngine.showCandidates)
+    }
+
+    /**
+     * 候选内容被就地改写（插入/提升纠错候选、按可信度重排）：按"整表替换"发布。
+     * 这类改动可能落在列表中间，不能当作"追加"去做增量插入。
+     */
+    fun notifyCandidatesChanged() {
+        publish(RimeEngine.showCandidates)
     }
 
     /**
@@ -131,7 +155,7 @@ object DictDecoder {
         isAssociate = associate
         activeCandidate = 0
         activeCandidateBar = 0
-        candidatesLiveData.value = words.asList()
+        publish(words.asList())
     }
 
     /**

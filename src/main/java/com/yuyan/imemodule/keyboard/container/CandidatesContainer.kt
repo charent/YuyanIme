@@ -60,6 +60,10 @@ class CandidatesContainer(context: Context, inputView: InputView) : BaseContaine
     private lateinit var mCandidatesAdapter: CandidatesAdapter
     private var mRVLeftPrefix = inflate(getContext(), R.layout.sdk_view_rv_prefix, null) as SwipeRecyclerView
     private var isLoadingMore = false // 正在加载更多
+
+    /** 上一次全量刷新时对应的候选"代"与条数，用于识别"只是追加了一批" */
+    private var syncedGeneration = -1
+    private var syncedCount = 0
     private val mLlAddSymbol : LinearLayout = LinearLayout(context).apply{
         layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { margin = (dp(20)) }
         gravity = Gravity.CENTER
@@ -171,6 +175,17 @@ class CandidatesContainer(context: Context, inputView: InputView) : BaseContaine
     fun showCandidatesView() {
         if (DictDecoder.isCandidatesEmpty || DictDecoder.isAssociate){
             mRVSymbolsView.removeAllViews()
+            syncedGeneration = -1
+            syncedCount = 0
+            return
+        }
+        if (::mCandidatesAdapter.isInitialized &&
+            DictDecoder.generation == syncedGeneration &&
+            DictDecoder.candidateSize > syncedCount) {
+            // 只是往后追加了一批：增量插入。走 notifyDataSetChanged 会把整个网格重排一遍，
+            // 候选按批加载时每次滚动到底都会卡一下。
+            mCandidatesAdapter.notifyRangeInserted(DictDecoder.candidateSize - syncedCount)
+            syncedCount = DictDecoder.candidateSize
         } else {
             if(DictDecoder.activeCandidate == 0){
                 mCandidatesAdapter = CandidatesAdapter(context)
@@ -183,11 +198,13 @@ class CandidatesContainer(context: Context, inputView: InputView) : BaseContaine
             } else {
                 mCandidatesAdapter.notifyDataSetChanged()
             }
+            syncedGeneration = DictDecoder.generation
+            syncedCount = DictDecoder.candidateSize
 //            if(DecodingInfo.candidateSize > DecodingInfo.activeCandidate) mRVSymbolsView.scrollToPosition(DecodingInfo.activeCandidate)
-            if (InputModeSwitcher.isChineseT9) {
-                mRVLeftPrefix.visibility = VISIBLE
-                updatePrefixsView()
-            }
+        }
+        if (InputModeSwitcher.isChineseT9) {
+            mRVLeftPrefix.visibility = VISIBLE
+            updatePrefixsView()
         }
     }
 

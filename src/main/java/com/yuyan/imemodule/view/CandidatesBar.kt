@@ -43,6 +43,12 @@ import kotlinx.coroutines.launch
 import splitties.dimensions.dp
 
 /**
+ * 距离列表末尾还剩几项就预取下一批候选。
+ * 等滑到最后一项才去取，会在惯性结束后才冒出候选，观感上就是一顿一顿的。
+ */
+private const val LOAD_MORE_LOOKAHEAD = 6
+
+/**
  * 候选词集装箱
  */
 class CandidatesBar(context: Context?, attrs: AttributeSet?) : RelativeLayout(context, attrs) {
@@ -62,6 +68,10 @@ class CandidatesBar(context: Context?, attrs: AttributeSet?) : RelativeLayout(co
     private lateinit var mCandidatesMenuAdapter: CandidatesMenuAdapter
     private lateinit var candidatesData: LinearLayout //候选词视图
     private var activeCandNo:Int = 0
+
+    /** 上一次全量刷新时对应的候选"代"与条数，用于识别"只是追加了一批" */
+    private var syncedGeneration = -1
+    private var syncedCount = 0
 
     fun initialize(cvListener: CandidateViewListener) {
         mCvListener = cvListener
@@ -106,7 +116,7 @@ class CandidatesBar(context: Context?, attrs: AttributeSet?) : RelativeLayout(co
                         DictDecoder.activeCandidateBar =
                             layoutManager.findLastVisibleItemPosition()
                         val itemCount = recyclerView.adapter?.itemCount
-                        if (KeyboardManager.instance.currentContainer !is CandidatesContainer && itemCount != null && DictDecoder.activeCandidateBar >= itemCount - 1) {
+                        if (KeyboardManager.instance.currentContainer !is CandidatesContainer && itemCount != null && DictDecoder.activeCandidateBar >= itemCount - LOAD_MORE_LOOKAHEAD) {
                             DictDecoder.nextPageCandidates
                         }
                     }
@@ -273,6 +283,15 @@ class CandidatesBar(context: Context?, attrs: AttributeSet?) : RelativeLayout(co
      * 显示候选词
      */
     fun showCandidates() {
+        // 追加路径：候选没换成新的一批、只是条数变多 → 只做增量插入。
+        // 不走下面那套「重绑 + 归位」，否则滚到边界每加一批都会打断滑动，表现为一卡一卡。
+        if (DictDecoder.generation == syncedGeneration && DictDecoder.candidateSize > syncedCount) {
+            mCandidatesAdapter.notifyRangeInserted(DictDecoder.candidateSize - syncedCount)
+            syncedCount = DictDecoder.candidateSize
+            return
+        }
+        syncedGeneration = DictDecoder.generation
+        syncedCount = DictDecoder.candidateSize
         mComposingView.text = DictDecoder.composingStrForDisplay
         val container = KeyboardManager.instance.currentContainer
         mIvMenuSetting.drawable.setLevel( if(container is InputBaseContainer) 0 else 1)

@@ -26,12 +26,21 @@ import java.util.Locale
  * 两个常数的依据见 `docs/pinyin-correction-redesign.md` §2.2：
  * 11 个实测 case 全中、2000 个高频编码反例零误报，且在 3.0~4.5 区间完全不敏感。
  *
- * ## 两条生成路径
+ * ## 三条生成路径（按「用户错在哪一层」分层，可信度依次递减）
  *
  * | 输入 | 生成 | 放置 |
  * | --- | --- | --- |
  * | 切得开（`bihao`、`lanfajie`） | 穷尽的**单键相邻替换**变体 | 首位之后 |
- * | 切不开（`zhonguo`、`xung`） | 音节级编辑距离假设 | 无候选时置前，否则首位之后 |
+ * | 切不开（`zhonguo`、`lsogong`） | 音节级编辑距离假设 | 无候选时置前，否则首位之后 |
+ * | 前缀对、末尾半个音节（`ni'h`） | **前缀原样 + 补齐**，只有它找不到词时才改前缀 | 补齐 = 不纠错；改前缀 = 置前 |
+ *
+ * 三条路径对应三种意图，不能混成一个池子按代价截断：
+ * - 混在一起时 `ni'h` 的 `ni`（14.17，删掉 `h`）会压过 `ni'he`——用户明明打对了半个词，
+ *   却被「呢/睨/您」占掉首位；
+ * - 混在一起时 `yiux` 的 `you`（16.70，删掉 `x`）会压过 `you'xi`（游戏，13.13）；
+ * - 混在一起时 `lanfaj` 的 `kan'da'jia`（8.69，改前缀来的）会压过 `lan'da'jie`（烂大街，4.61）。
+ *
+ * 所以先按结构分层，再让引擎词库的权重在同一层内定胜负；跨层只在「更可信的一层完全无解」时降级。
  *
  * ## 影子查询只负责取词
  *
@@ -71,8 +80,19 @@ object CorrectionSession {
     /** 近键变体最多生成多少个（判定是纯内存的，可以放宽） */
     private const val NEAR_KEY_VARIANTS = 12
 
-    /** 非法输入最多取几个假设去裁决 */
-    private const val ILLEGAL_VARIANTS = 6
+    /**
+     * 通用解码最多取几条去查库。它只负责补上「前缀+补齐」覆盖不到的结构
+     * （`xung` -> `xing`），不是主力，所以给得少：每条都是一次词库查表。
+     */
+    private const val DECODED_VARIANTS = 12
+
+    /**
+     * 末尾是半个音节时，额外给补齐它的预算（相当于最多两个字母）。
+     *
+     * 这不是放宽纠错强度，而是把「还没打完」和「打错」分开计价：用户没打完的音节，
+     * 补齐它不该花掉「允许改几个字母」的额度。
+     */
+    private const val TAIL_COMPLETION_BUDGET = 2.0f
 
     /** 两类路径各自最多展示几条纠错候选 */
     private const val MAX_ITEMS = 3
@@ -206,30 +226,78 @@ object CorrectionSession {
         // 否则会把「用户打对了的词」估低，凭空冒出纠错建议。
         val originalWeight = weightOfRaw(lexicon, raw)
         val clean = PinyinCorrector.hasCleanParse(raw)
+        // 末尾那半个音节（`ni'h` 的 `h`、`lan'fa'j` 的 `j`）；末尾完整时为 null
+        val tail = if (clean) null else PinyinCorrector.incompleteTail(raw)
+        if (raw.length < 3) return null
 
-        val variants = if (clean) {
-            if (raw.length < 3) return null
-            PinyinCorrector.nearKeyVariants(raw, NEAR_KEY_VARIANTS)
-                .map { Variant(it.code, it.code.split('\''), it.score) }
+        // 候选按「用户到底错在哪一层」分层生成，而不是混成一个池子按代价截断：
+        //   typed   —— 前缀原样，只把末尾半个音节补齐（`ni'h` -> `ni'he`）
+        //   fixed   —— 前缀改一位，再补齐（`lan'fa'j` -> `lan'da'jie`），**只在 typed 找不到词时**才启用
+        //   decoded —— 通用解码，负责「末字母并回前一个音节」这类结构（`xung` -> `xing`）
+        //
+        // 分层的理由：这三层对应三种不同的用户意图，可信度依次递减。混在一起时，
+        // `kan'da'jia`（8.69，改前缀来的）会压过用户真打对的 `lan'da'jie`（4.61，烂大街），
+        // 于是「打对了」反而被判成要先改前缀。
+        val ranked: List<Variant>
+        if (clean) {
+            ranked = judge(
+                PinyinCorrector.nearKeyVariants(raw, NEAR_KEY_VARIANTS)
+                    .map { Variant(it.code, it.code.split('\''), it.score) },
+                lexicon, originalWeight,
+            )
         } else {
-            // `z`、`zh` 这种可能只是还没打完；`zhon` 是 `zhong` 的前缀，也先不打扰
-            if (raw.length < 3) return null
-            if (PinyinCorrector.isPrefixOfLongerSyllable(raw)) return null
-            val budget = prefs.input.pinyinCorrectionStrength.getValue().budget()
-            PinyinCorrector.decode(raw, budget)
-                .filter { it.compactCode != raw }
-                .take(ILLEGAL_VARIANTS)
-                .map { Variant(it.code, it.code.split('\''), -it.cost) }
-        }
-        if (variants.isEmpty()) return null
+            // 预算要放宽：补齐半个音节不是「改错」，不该挤占纠错的编辑预算。
+            // `lan'fa'j` -> `lan'da'jie` 要 f→d（0.9）再加把 j 补成 jie（2.0），
+            // 标准档 2.2 装不下，烂大街就永远进不了候选集。
+            val budget = prefs.input.pinyinCorrectionStrength.getValue().budget() +
+                if (tail != null) TAIL_COMPLETION_BUDGET else 0f
+            // 半个音节的**第一个字母必须留在原位**：用户按的就是它，纠错可以把它后面补齐
+            // （`j` -> `jie`），也可以改它前面的音节（`fa` -> `da`），但不能把这一位换成别的
+            // 字母——`jintiant` 的末位 `t` 被换成 `n`（`jing'tian`）不是用户打的字。
+            val tailAt = if (tail == null) -1 else raw.length - tail.length
+            fun keep(c: PinyinCorrector.Hypothesis): Boolean =
+                c.compactCode != raw &&
+                    !dropsTypedKey(c.compactCode, raw) &&
+                    (tailAt < 0 || (c.compactCode.length > tailAt && c.compactCode[tailAt] == raw[tailAt]))
 
-        // 裁决：权重定胜负，同权重时用生成阶段的启发式分（邻键更近 / 编辑代价更低）
-        val ranked = variants
-            .mapNotNull { v ->
-                val weight = weightOf(lexicon, v.syllables)
-                if (beats(weight, originalWeight)) v.copy(weight = weight) else null
+            val completions = if (tail == null) emptyList() else PinyinCorrector
+                .completionVariants(raw, maxCompletion = TAIL_COMPLETION_BUDGET)
+                .filter { keep(it) }
+            val typed = judge(completions.filter { it.compactCode.startsWith(raw) }.map { toVariant(it) },
+                lexicon, originalWeight)
+            val typedBest = typed.maxOfOrNull { it.weight } ?: 0f
+            val fixed = if (tail != null && typedBest < MIN_KNOWN_WEIGHT) {
+                judge(completions.filterNot { it.compactCode.startsWith(raw) }.map { toVariant(it) },
+                    lexicon, originalWeight)
+            } else {
+                emptyList()
             }
-            .sortedWith(compareByDescending<Variant> { it.weight }.thenByDescending { it.score })
+            val decoded = judge(
+                PinyinCorrector.decode(raw, budget).filter { keep(it) }.take(DECODED_VARIANTS).map { toVariant(it) },
+                lexicon, originalWeight,
+            )
+            val merged = (typed + fixed + decoded)
+                .distinctBy { it.code }
+                .sortedWith(compareByDescending<Variant> { it.weight }.thenByDescending { it.score })
+
+            // 「只是还没打完」与「打错了」的分界。
+            //
+            // 原样前缀那一支已经成型（`ni'h` -> `ni'he`、`ying'x` -> `ying'xiang`），而「改前缀」
+            // 那一支并没有明显更好（差不到 [WEIGHT_MARGIN]），说明用户打的这半截本来是对的，
+            // 只是还想接着打——纠错不该抢在引擎前面替他猜下一句。
+            // 反过来 `xung` 的 `xun'gu`（8.57）也成型，但 `xing`（行，14.83）明显更好，照常纠；
+            // `lan'fa'j` 的原样前缀一支干脆没有词，于是走「改前缀」。
+            if (tail != null) {
+                val bestTyped = merged.filter { it.isExtensionOf(raw) }.maxOfOrNull { it.weight } ?: 0f
+                val bestOther = merged.filterNot { it.isExtensionOf(raw) }.maxOfOrNull { it.weight } ?: 0f
+                if (bestTyped > 0f && bestOther < bestTyped + WEIGHT_MARGIN) {
+                    Log.d(TAG, "still-typing raw=$raw tail=$tail typed=$bestTyped other=$bestOther")
+                    return null
+                }
+            }
+            ranked = merged
+        }
+
         val topWeight = ranked.firstOrNull()?.weight ?: 0f
         val hits = ranked
             .filter { it.weight >= topWeight - RELATIVE_MARGIN }
@@ -274,12 +342,51 @@ object CorrectionSession {
         /** 生成阶段的启发式分，仅用于同权重时排序 */
         val score: Float,
         val weight: Float = 0f,
-    )
+    ) {
+        /** 是否只是把用户已打的字母补齐（前缀原样保留） */
+        fun isExtensionOf(raw: String): Boolean =
+            syllables.joinToString("").startsWith(raw)
+    }
 
     /** 原输入不在词库时看绝对门槛，否则看「明显更好」 */
     private fun beats(weight: Float, originalWeight: Float): Boolean =
         if (originalWeight <= 0f) weight >= MIN_KNOWN_WEIGHT
         else weight >= originalWeight + WEIGHT_MARGIN
+
+    private fun toVariant(h: PinyinCorrector.Hypothesis): Variant =
+        Variant(h.code, h.syllables, -h.cost)
+
+    /**
+     * 逐条查引擎词库，只留下「比原输入更可信」的假设，按权重降序。
+     * 权重定胜负，同权重时看生成阶段的启发式分（邻键更近 / 补齐代价更低）。
+     */
+    private fun judge(
+        variants: List<Variant>,
+        lexicon: EngineLexicon,
+        originalWeight: Float,
+    ): List<Variant> = variants
+        .mapNotNull { v ->
+            val weight = weightOf(lexicon, v.syllables)
+            if (beats(weight, originalWeight)) v.copy(weight = weight) else null
+        }
+        .sortedWith(compareByDescending<Variant> { it.weight }.thenByDescending { it.score })
+
+    /**
+     * 假设是否丢掉了用户按下的键。
+     *
+     * 「多按一个键」和「少按一个键」看起来对称，证据却不对称：假设比输入还短，等于直接
+     * 删掉了用户最后按下的那个字母——而它恰恰是他此刻最确定的意图。实测 `yiux` 里
+     * 「有」(you, 16.70) 就是这样压过「游戏」(you'xi, 13.13) 的：前者把 `x` 当多余键删掉，
+     * 后者把 `x` 当成 `xi` 的声母。要求假设**至少覆盖用户打过的每个字母**，这一条就不成立了。
+     *
+     * 例外：末尾连按两下（`beijingg`、`haoo`）——没有音节以两个相同字母开头，
+     * 多出来的那个键是重复按键，本来就该被折掉。
+     */
+    private fun dropsTypedKey(code: String, raw: String): Boolean {
+        if (code.length >= raw.length) return false
+        val doubledTail = raw.length >= 2 && raw[raw.length - 1] == raw[raw.length - 2]
+        return !doubledTail
+    }
 
     /** 音节序列 → 引擎词库里的最高权重；有音节不在引擎音节表里就当 0 */
     private fun weightOf(lexicon: EngineLexicon, syllables: List<String>): Float {

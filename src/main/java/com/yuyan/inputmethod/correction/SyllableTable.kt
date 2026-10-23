@@ -160,5 +160,16 @@ object SyllableTable {
 
     /** 是否还有更长的音节以 [prefix] 开头 —— 说明用户可能只是还没打完 */
     fun isPrefixOfLongerSyllable(prefix: String): Boolean =
-        byFirstLetter[prefix[0]]?.any { it.length > prefix.length && it.startsWith(prefix) } == true
+        prefix.isNotEmpty() &&
+            byFirstLetter[prefix[0]]?.any { it.length > prefix.length && it.startsWith(prefix) } == true
+
+    /**
+     * 是否是**半个音节**：自己还不是合法音节，但还有合法音节以它打头（`h` -> ha/hai/…，`zh` -> zha/…）。
+     *
+     * 这是「用户正在往下打」的语言学证据：一个合法音节之后的半个音节，只能是下一个音节的声母，
+     * 而不会是一次按键失误。注意不能直接用 [isPrefixOfLongerSyllable]：它把 `ni`、`ying` 这种
+     * 「本身合法、但还能延长」的音节也算作前缀，那是**打完的音节**，不是半个。
+     */
+    fun isIncompleteSyllable(prefix: String): Boolean =
+        !syllableSet.contains(prefix) && isPrefixOfLongerSyllable(prefix)
 }

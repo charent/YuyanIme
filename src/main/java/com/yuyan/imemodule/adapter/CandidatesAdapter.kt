@@ -44,6 +44,19 @@ class CandidatesAdapter(context: Context?) :
         return DictDecoder.candidateSize
     }
 
+    /**
+     * 只是向后追加了 [count] 条候选：增量插入，不做全量重绑（会打断滑动、重排整个网格）。
+     */
+    fun notifyRangeInserted(count: Int) {
+        if (count <= 0) return
+        val start = itemCount - count
+        if (start < 0) {
+            notifyDataSetChanged()
+            return
+        }
+        notifyItemRangeInserted(start, count)
+    }
+
     inner class SymbolHolder(view: View) : RecyclerView.ViewHolder(view) {
         var textView: EmojiTextView = view.findViewById(R.id.gv_candidates_item)
 

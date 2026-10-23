@@ -25,6 +25,11 @@ import com.yuyan.imemodule.singleton.EnvironmentSingleton.Companion.instance
 import splitties.dimensions.dp
 
 /**
+ * 距离列表末尾还剩几项就预取下一批候选（与 [com.yuyan.imemodule.view.CandidatesBar] 一致）。
+ */
+private const val LOAD_MORE_LOOKAHEAD = 6
+
+/**
  * 候选词集装箱
  */
 class FloatCandidateBar(context: Context?, attrs: AttributeSet?) : RelativeLayout(context, attrs) {
@@ -37,6 +42,10 @@ class FloatCandidateBar(context: Context?, attrs: AttributeSet?) : RelativeLayou
     private lateinit var mCandidatesAdapter: CandidatesBarAdapter
     private lateinit var candidatesData: LinearLayout //候选词视图
     private var activeCandNo:Int = 0
+
+    /** 上一次全量刷新时对应的候选"代"与条数，用于识别"只是追加了一批" */
+    private var syncedGeneration = -1
+    private var syncedCount = 0
 
     fun initialize(cvListener: CandidateViewListener) {
         mCvListener = cvListener
@@ -75,7 +84,7 @@ class FloatCandidateBar(context: Context?, attrs: AttributeSet?) : RelativeLayou
                         DictDecoder.activeCandidateBar =
                             layoutManager.findLastVisibleItemPosition()
                         val itemCount = recyclerView.adapter?.itemCount
-                        if (KeyboardManager.instance.currentContainer !is CandidatesContainer && itemCount != null && DictDecoder.activeCandidateBar >= itemCount - 1) {
+                        if (KeyboardManager.instance.currentContainer !is CandidatesContainer && itemCount != null && DictDecoder.activeCandidateBar >= itemCount - LOAD_MORE_LOOKAHEAD) {
                             DictDecoder.nextPageCandidates
                         }
                     }
@@ -99,6 +108,14 @@ class FloatCandidateBar(context: Context?, attrs: AttributeSet?) : RelativeLayou
      * 显示候选词
      */
     fun showCandidates() {
+        // 追加路径：只增量插入，不重绑、不归位（否则滑动惯性会被打断）
+        if (DictDecoder.generation == syncedGeneration && DictDecoder.candidateSize > syncedCount) {
+            mCandidatesAdapter.notifyRangeInserted(DictDecoder.candidateSize - syncedCount)
+            syncedCount = DictDecoder.candidateSize
+            return
+        }
+        syncedGeneration = DictDecoder.generation
+        syncedCount = DictDecoder.candidateSize
         mComposingView.text = DictDecoder.composingStrForDisplay
         if (DictDecoder.isCandidatesEmpty && !DictDecoder.isComposing) {
             this.visibility = GONE

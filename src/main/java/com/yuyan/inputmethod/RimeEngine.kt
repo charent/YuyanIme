@@ -35,13 +35,20 @@ object RimeEngine {
     private var rimeIndexes: IntArray = IntArray(0)
 
     /**
-     * 每批候选的条数。
+     * 每敲一个键取多少条候选 —— 这个值直接等于「引擎要翻译 + 过滤多少个候选」。
      *
-     * 与 schema 的 `menu/page_size`（5）解耦：候选栏靠 [Rime.getCandidates] 按需往后取。
-     * 这里的值直接等于「每敲一个键，引擎要翻译 + 过滤多少个候选」——取 30 够铺满一屏候选面板，
-     * 又比原先一次算满 100 条少 70% 的工作量；再往后翻只是继续取下一段，不再重算。
+     * 与 schema 的 `menu/page_size`（5）解耦：`get_context` 只为自己那一页预取 5 条，
+     * 候选本体由 [Rime.getCandidates] 按需取。30 条够铺满一屏候选栏，比原先一次算满 100 条少做 70% 的活。
      */
-    private const val CANDIDATE_PAGE_SIZE = 30
+    private const val FIRST_BATCH_SIZE = 30
+
+    /**
+     * 滚动到底时一次补多少条。
+     *
+     * 这条路径发生在滑动过程中（且 UI 侧走增量插入、不重绑），取大一些可以让绝大多数查询
+     * 一次补足、不再二次打断；与改动前的 `menu/page_size: 100` 等价。
+     */
+    private const val LOAD_MORE_SIZE = 100
 
     /** 下一次从全量候选列表的哪个全局下标开始取 */
     private var candidateOffset = 0
@@ -157,12 +164,12 @@ object RimeEngine {
      * 从全量候选列表里取一段，并同步推进分页游标。
      *
      * [offset] 是 librime 的候选全局下标，返回的第 i 项对应下标 `offset + i`；
-     * 返回条数不足 [CANDIDATE_PAGE_SIZE] 即说明后面没有了。
+     * 返回条数不足 [limit] 即说明后面没有了。
      */
-    private fun fetchCandidates(offset: Int): List<CandidateListItem> {
-        val batch = Rime.getCandidates(offset, CANDIDATE_PAGE_SIZE)
+    private fun fetchCandidates(offset: Int, limit: Int): List<CandidateListItem> {
+        val batch = Rime.getCandidates(offset, limit)
         candidateOffset = offset + batch.size
-        candidatesExhausted = batch.size < CANDIDATE_PAGE_SIZE
+        candidatesExhausted = batch.size < limit
         return batch
     }
 
@@ -195,7 +202,7 @@ object RimeEngine {
     fun appendNextPage(): Int {
         if (candidatesExhausted) return 0
         val base = candidateOffset
-        val page = fetchCandidates(base)
+        val page = fetchCandidates(base, LOAD_MORE_SIZE)
         if (page.isEmpty()) return 0
         applyCharCase(page)
         val existing = HashSet<String>(showCandidates.size + page.size)
@@ -344,7 +351,7 @@ object RimeEngine {
         // 组合串直接读 Rime 缓存的那份：所有会改引擎状态的调用（processKey / replaceKey /
         // selectCandidate / clearComposition / selectSchema）内部都已经刷新过；
         // pushKey 返回 false 的那条路径引擎状态本来就没变。这里不再多拉一次 get_context。
-        val candidates = fetchCandidates(0)
+        val candidates = fetchCandidates(0, FIRST_BATCH_SIZE)
         customPhraseSize = 0
         val compositionText = Rime.compositionText
         // 定位"编码本身"候选（echo_translator 的产物）；只有还存在别的候选时才剔掉它，
@@ -444,8 +451,9 @@ object RimeEngine {
             if (Rime.compositionText != compositionText) return@Runnable
             if (showCandidates.isEmpty()) return@Runnable
             if (!applyPinyinCorrection(compositionText, candidates)) return@Runnable
-            // 纠错候选补进列表后主动推一次，界面自己会刷新
-            DictDecoder.candidatesLiveData.value = showCandidates
+            // 纠错候选是插进列表中间的（还可能把原有同词提到前面），只能整表刷新，
+            // 不能走"追加"的增量插入路径
+            DictDecoder.notifyCandidatesChanged()
         }
         pendingCorrection = task
         correctionHandler.postDelayed(task, CORRECTION_DELAY_MS)
@@ -476,7 +484,7 @@ object RimeEngine {
         // 输入连干净切分都做不到（`zlvlnv`、`lsogon`），说明 Rime 的整条候选链都建立在
         // 错误切分上：它会把每个字母单独当音节，再逐音节各挑一个高频字，拼出覆盖全文的
         // 「整句」（之旅靓女、来说讴歌欧帖）。这类串不在词库里，先把它们沉到底下。
-        var changed = !PinyinCorrector.hasCleanParse(compositionText) && demoteUnverifiedCandidates()
+        var changed = inputIsGarbled(compositionText) && demoteUnverifiedCandidates()
 
         val correction = CorrectionSession.correct(
             compositionText,
@@ -518,6 +526,16 @@ object RimeEngine {
         if (at <= customPhraseSize) customPhraseSize += items.size
         return true
     }
+
+    /**
+     * 输入是否**整体跑偏**：连一个干净切分都拼不出来，而且末尾也不是「还差半个音节」。
+     *
+     * 只有这种输入才谈得上「Rime 的候选链建立错了切分」——`zlvlnv`、`lsogong` 是。
+     * `ni'h`、`ying'x` 同样切不干净，但它们是**打到一半**：Rime 的 `ni` / `ying` 是用户
+     * 真打出来的音节，候选（你会 / 影响）完全正确，不能连带把它们降权。
+     */
+    private fun inputIsGarbled(composition: String): Boolean =
+        !PinyinCorrector.hasCleanParse(composition) && !PinyinCorrector.hasIncompleteTail(composition)
 
     /**
      * 把词库里查不到的候选沉到后面（稳定排序，两组内部都保持 Rime 原来的相对顺序）。

@@ -62,6 +62,22 @@ class CandidatesBarAdapter(context: Context?) :
         notifyDataSetChanged()
     }
 
+    /**
+     * 只是向后追加了 [count] 条候选：增量插入。
+     *
+     * 用 `notifyDataSetChanged` 会重绑所有可见项并打断正在进行的滑动，
+     * 滚动加载时每加一批就卡一下——这也是候选批次变小后顿感变明显的原因。
+     */
+    fun notifyRangeInserted(count: Int) {
+        if (count <= 0) return
+        val start = itemCount - count
+        if (start < 0) {
+            notifyDataSetChanged()
+            return
+        }
+        notifyItemRangeInserted(start, count)
+    }
+
     inner class SymbolHolder(view: View) : RecyclerView.ViewHolder(view) {
         var textView: EmojiTextView = view.findViewById(R.id.gv_candidates_bar_item)
         init {
