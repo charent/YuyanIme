@@ -75,7 +75,18 @@ Info "submodule tree : $SubTree"
 
 # ---------------------------------------------------------------- branch
 Step "Create working branch '$Branch'"
-if (git rev-parse --verify --quiet $Branch) { Die "branch '$Branch' already exists (delete it or pass -Branch <other>)" }
+if (git rev-parse --verify --quiet $Branch) {
+    $aheadCount = @(git rev-list --count "master..$Branch" 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $aheadCount.Count -gt 0 -and [int]$aheadCount[0] -eq 0) {
+        Info "branch '$Branch' exists but has no commits (interrupted earlier run) - recreating"
+        git switch master
+        if ($LASTEXITCODE -ne 0) { Die 'git switch master failed' }
+        git branch -D $Branch
+        if ($LASTEXITCODE -ne 0) { Die "cannot delete stale branch '$Branch'" }
+    } else {
+        Die "branch '$Branch' already exists with commits - delete it or pass -Branch <other>"
+    }
+}
 git switch -c $Branch
 if ($LASTEXITCODE -ne 0) { Die 'git switch -c failed' }
 Ok "on branch $Branch"
@@ -97,6 +108,17 @@ Ok 'prebuilt backed up (cross-compiled static libs)'
 $SubGitBackup = Join-Path $BackupRoot 'yuyansdk.git'
 CopyTree (Join-Path $Repo '.git\modules\yuyansdk') $SubGitBackup
 Ok 'submodule gitdir backed up (subtree import source, no network needed)'
+
+# The copied gitdir still carries core.worktree = ../../../yuyansdk (a RELATIVE path).
+# From the backup location that target does not exist and every git call dies with
+# "fatal: cannot chdir". Turn the backup into a proper bare repo instead.
+$backupConfig = Join-Path $SubGitBackup 'config'
+$cfg = [IO.File]::ReadAllText($backupConfig)
+$cfg = $cfg -replace '(?m)^\s*worktree\s*=.*\r?\n', ''
+$cfg = $cfg -replace '(?m)^(\s*bare\s*=\s*)false', '$1true'
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[IO.File]::WriteAllText($backupConfig, $cfg, $utf8NoBom)
+Ok 'backup config: core.worktree stripped, bare = true'
 
 # sanity: the backup must resolve the same sha
 $BackupSha = (git -C $SubGitBackup rev-parse HEAD).Trim()
