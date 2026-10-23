@@ -18,6 +18,12 @@ static def getAppBuildTime() {
     return "git log -1 --pretty=%ai".execute().text.trim()
 }
 
+// 原生引擎（librime 1.17.0）的编译不走 Gradle：
+//   pwsh -File src/main/cpp/scripts/build-engine.ps1 -Abi arm64-v8a
+// 该脚本会编译依赖 + JNI，并把产物直接覆盖到 libs/<abi>/libyuyanime.so，
+// 因此打包流程与原来完全一致（sourceSets 的 jniLibs 仍指向 libs）。
+// 之所以不用 externalNativeBuild：libs 下同时存在手写等第三方 .so，
+// 两条路径都会产出 libyuyanime.so，会在打包时冲突。
 
 android {
     compileSdk 36

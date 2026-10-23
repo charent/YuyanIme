@@ -13,6 +13,7 @@ import com.yuyan.imemodule.utils.StringUtils
 import com.yuyan.inputmethod.core.CandidateListItem
 import com.yuyan.inputmethod.core.Rime
 import com.yuyan.inputmethod.correction.CorrectionSession
+import com.yuyan.inputmethod.correction.PinyinCorrector
 import com.yuyan.inputmethod.data.InputKey
 import com.yuyan.inputmethod.data.KeyRecordStack
 import com.yuyan.inputmethod.util.DoublePinYinUtils
@@ -60,10 +61,13 @@ object RimeEngine {
     private var pendingCorrection: Runnable? = null
 
     /**
-     * 停顿多久之后才做一次纠错。影子查询（尤其是「清空重放」兜底）单次可达几十毫秒，
-     * 放在按键路径上就是「打字突然卡一下」；120ms 覆盖不掉连续输入，只在真正停顿后算一次。
+     * 停顿多久之后才做一次纠错。
+     *
+     * 判定已经改成纯内存查引擎词库（0.2 ms），剩下的只有对**已胜出编码**的那一次影子查询。
+     * 16 ms 约等于一帧：连续打字的相邻按键会互相取消，停顿后结果几乎立刻出现，
+     * 不再有此前 60 ms 那种「慢半拍」的割裂感。
      */
-    private const val CORRECTION_DELAY_MS = 120L
+    private const val CORRECTION_DELAY_MS = 16L
 
     /** 引擎是否已经启动过：Rime.startup 是整套引擎装配，重复调用会让按键明显停顿 */
     private var engineStarted = false
@@ -310,8 +314,6 @@ object RimeEngine {
         }
         val rimeContext = Rime.getRimeContext()
         val candidates = rimeContext?.candidates?.asList() ?: emptyList()
-        // 候选总数当作「词库支持度」，纠错用它判断变体是不是比用户输入的更像个词
-        val candidateTotal = rimeContext?.menu?.numCandidates ?: candidates.size
         customPhraseSize = 0
         val compositionText = Rime.compositionText
         // 定位"编码本身"候选（echo_translator 的产物）；只有还存在别的候选时才剔掉它，
@@ -388,10 +390,9 @@ object RimeEngine {
         }
         showComposition = composition
         preCommitText = ""
-        // 纠错只做「影子查询」：临时改写组合串、取候选、再还原，单次成本远高于普通按键，
-        // 同步做会把连续输入卡住（用户感知就是"打字突然卡一下"）。这里改成停顿后再算：
-        // 按键永远优先，纠错结果晚几十毫秒补进候选栏。
-        scheduleCorrection(compositionText, candidates, candidateTotal)
+        // 判定已改成读引擎词库（0.2 ms），只剩「取文本」那一次影子查询还有成本，
+        // 所以这里只做一帧的去抖：连打时合并，停下后立刻出结果。
+        scheduleCorrection(compositionText, candidates)
         return null
     }
 
@@ -402,7 +403,6 @@ object RimeEngine {
     private fun scheduleCorrection(
         compositionText: String,
         candidates: List<CandidateListItem>,
-        candidateTotal: Int,
     ) {
         cancelCorrection()
         if (compositionText.isBlank()) return
@@ -412,7 +412,7 @@ object RimeEngine {
             // 停顿期间又按了键、选了词、切换了方案：这次纠错的上下文已经失效
             if (Rime.compositionText != compositionText) return@Runnable
             if (showCandidates.isEmpty()) return@Runnable
-            if (!applyPinyinCorrection(compositionText, candidates, candidateTotal)) return@Runnable
+            if (!applyPinyinCorrection(compositionText, candidates)) return@Runnable
             // 纠错候选补进列表后主动推一次，界面自己会刷新
             DictDecoder.candidatesLiveData.value = showCandidates
         }
@@ -441,15 +441,18 @@ object RimeEngine {
     private fun applyPinyinCorrection(
         compositionText: String,
         rimeCandidates: List<CandidateListItem>,
-        candidateTotal: Int,
     ): Boolean {
+        // 输入连干净切分都做不到（`zlvlnv`、`lsogon`），说明 Rime 的整条候选链都建立在
+        // 错误切分上：它会把每个字母单独当音节，再逐音节各挑一个高频字，拼出覆盖全文的
+        // 「整句」（之旅靓女、来说讴歌欧帖）。这类串不在词库里，先把它们沉到底下。
+        var changed = !PinyinCorrector.hasCleanParse(compositionText) && demoteUnverifiedCandidates()
+
         val correction = CorrectionSession.correct(
             compositionText,
             rimeCandidates,
             showCandidates.map { it.text },
-            candidateTotal,
-        ) ?: return false
-        if (correction.texts.isEmpty()) return false
+        )
+        if (correction == null || correction.texts.isEmpty()) return changed
 
         val items = correction.texts.map { CandidateListItem(CORRECTION_TAG, it) }
         val at = when (correction.placement) {
@@ -482,6 +485,28 @@ object RimeEngine {
         rimeIndexes = mergedIndexes.toIntArray()
         // 插到自定义候选之前时，首位判定要跟着挪
         if (at <= customPhraseSize) customPhraseSize += items.size
+        return true
+    }
+
+    /**
+     * 把词库里查不到的候选沉到后面（稳定排序，两组内部都保持 Rime 原来的相对顺序）。
+     *
+     * 用户词库注入的自定义候选（前 [customPhraseSize] 条）不参与，它们本来就不在 `table.bin` 里。
+     *
+     * @return 顺序是否真的变了
+     */
+    private fun demoteUnverifiedCandidates(): Boolean {
+        val from = customPhraseSize.coerceAtMost(showCandidates.size)
+        val size = showCandidates.size - from
+        if (size < 2) return false
+        val order = (0 until size).sortedBy {
+            if (CorrectionSession.isVerifiedWord(showCandidates[from + it].comment)) 0 else 1
+        }
+        if (order.indices.all { order[it] == it }) return false
+
+        showCandidates = showCandidates.take(from) + order.map { showCandidates[from + it] }
+        rimeIndexes = rimeIndexes.copyOfRange(0, from) +
+            IntArray(size) { rimeIndexes[from + order[it]] }
         return true
     }
 

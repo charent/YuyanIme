@@ -179,11 +179,15 @@ object PinyinCorrector {
      *
      * @param max 最多返回多少个变体（按启发式分数降序）
      */
-    fun nearKeyVariants(code: String, max: Int = 8): List<NearKeyVariant> {
+    fun nearKeyVariants(code: String, max: Int = 12): List<NearKeyVariant> {
         val syllables = parseSyllables(normalize(code)) ?: return emptyList()
         if (syllables.isEmpty()) return emptyList()
-        // 最后一个音节还没打完（`niha` 里 `ha` 是 `hai/han/hao` 的前缀）时不生成，避免打字过程中瞎猜
-        if (SyllableTable.isPrefixOfLongerSyllable(syllables.last())) return emptyList()
+
+        // 这里**不能**用「末尾音节还是更长音节的前缀」来拦：`fan` 是 `fang` 的前缀、`dan` 是 `dang` 的前缀、
+        // `bi` 是 `bian/bin` 的前缀…… 一拦就把 -an / -i / -u 这些开音节整片漏掉
+        // （`mingfan` -> `mingdan`、`mingdan` -> `mingfan` 两个方向全都出不来）。
+        // 「用户可能还没打完」的判断交给上层：它知道当前候选是什么，可以在这种情况下要求更高的词频
+        // （CorrectionSession.buildNearKey 的 ambiguousTail），而不是在生成阶段一刀切。
 
         val variants = LinkedHashMap<String, Float>(16)
         syllables.forEachIndexed { syllableIndex, syllable ->
@@ -256,6 +260,40 @@ object PinyinCorrector {
             }
         }
         return best[n]?.syllables
+    }
+
+    /**
+     * 枚举编码的**全部合法切分**（按音节数从少到多，最多 [limit] 种）。
+     *
+     * [parseSyllables] 在代价相同时偏向「音节数最多」，这对生成变体是对的，但用来查词库权重会出事：
+     * `xian` 会被切成 `xi + an`（西安），而用户想打的是 `xian`（先/现/线）。同一个字母串在引擎词库里
+     * 可能同时存在多种切分的词条，所以查权重时必须把几种切分都试一遍、取最大值。
+     */
+    fun allSplits(code: String, limit: Int = 4): List<List<String>> {
+        val raw = normalize(code)
+        if (raw.isEmpty() || raw.any { it !in 'a'..'z' }) return emptyList()
+        val n = raw.length
+        val paths = Array(n + 1) { ArrayList<List<String>>() }
+        paths[0].add(emptyList())
+        for (i in 0 until n) {
+            if (paths[i].isEmpty()) continue
+            for (j in i + 1..minOf(i + 6, n)) {
+                val sub = raw.substring(i, j)
+                if (!SyllableTable.isSyllable(sub)) continue
+                for (path in paths[i]) {
+                    if (paths[j].size >= limit * 4) break
+                    paths[j].add(path + sub)
+                }
+            }
+            // 中间状态也要剪枝，否则长串的切分数量是斐波那契级
+            if (paths[i].size > limit * 2) {
+                paths[i] = ArrayList(paths[i].sortedBy { it.size }.take(limit * 2))
+            }
+        }
+        return paths[n]
+            .distinct()
+            .sortedBy { it.size }
+            .take(limit)
     }
 
     /**

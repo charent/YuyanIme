@@ -15,7 +15,10 @@ object CustomConstant {
     const val SCHEMA_ZH_DOUBLE_FLYPY = "double_pinyin_" // 小鹤双拼
     const val SCHEMA_ZH_DOUBLE_LX17 = "double_pinyin_ls17" // 乱序17双拼
     const val SCHEMA_ZH_STROKE = "stroke" // 五笔画
-    const val CURRENT_RIME_DICT_DATA_VERSIOM = 20261017
+    // 20261022：升级到 librime 1.17.0（prism 3.0→4.0、新增 schema yaml）
+    // 20261023：schema 补 menu/page_size（缺省 5，等价旧版 setRimePageSize(100)）
+    // 必须递增此版本号，否则老用户不会重新复制 assets 里的词典与配置
+    const val CURRENT_RIME_DICT_DATA_VERSIOM = 20261023
     const val YUYAN_IME_REPO = "https://github.com/gurecn/YuyanIme"
     const val LICENSE_URL = "https://www.gnu.org/licenses/gpl-3.0.html"
     const val FEEDBACK_TXC_REPO = "https://github.com/gurecn/YuyanIme/issues"

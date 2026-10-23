@@ -14,7 +14,7 @@ import com.yuyan.imemodule.service.ClipboardHelper
 import com.yuyan.imemodule.service.InputDispatcher
 import com.yuyan.imemodule.utils.AssetUtils.copyFileOrDir
 import com.yuyan.imemodule.utils.thread.ThreadPoolUtils
-import com.yuyan.inputmethod.correction.WordFrequency
+import com.yuyan.inputmethod.correction.EngineLexicon
 
 class Launcher {
     lateinit var context: Context
@@ -48,7 +48,9 @@ class Launcher {
             }
             InputDispatcher.resetIme()  // 解决词库复制慢，导致先调用初始化问题
             UserDictManager.load()      // 用户词库载入内存索引，供候选注入高频查询
-            WordFrequency.load(context) // 纠错排序用的词频表（纯文本，约 355 KB）
+            // 纠错直接读引擎自己的词库（必须放在上面的词库复制之后）：
+            // 不新增任何资源，判定依据与引擎出候选完全一致
+            EngineLexicon.prepare(CustomConstant.RIME_DICT_PATH + "/build/pinyin.table.bin")
             YuyanEmojiCompat.init(context)
             //初始化键盘主题
             val isFollowSystemDayNight = prefs.followSystemDayNightTheme.getValue()

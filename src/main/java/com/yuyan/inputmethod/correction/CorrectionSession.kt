@@ -4,55 +4,91 @@ import android.os.SystemClock
 import android.util.Log
 import com.yuyan.imemodule.application.CustomConstant
 import com.yuyan.imemodule.prefs.AppPrefs
-import com.yuyan.imemodule.prefs.behavior.PinyinCorrectionStrength
 import com.yuyan.inputmethod.core.CandidateListItem
 import com.yuyan.inputmethod.core.Rime
+import java.util.Locale
 
 /**
- * 纠错会话：触发判定 + 影子查询 + 结果合并。
+ * 纠错会话：生成候选编码 → 用引擎自己的词库裁决 → 只对胜出的编码取一次候选文本。
  *
- * 设计文档 4.2（触发策略）与 4.4（Rime 二次验证）的落地：
+ * ## 判定只依赖一件事：引擎词库里的权重
  *
- * | 触发 | 条件 | 放置 |
+ * `pinyin.table.bin`（[EngineLexicon]）就是引擎出候选用的词典，191 万条词条。
+ * 「比好」「辣死公」这类音节硬拼的组合不在里面，「烂大街」「明矾」这类口语词反而有，
+ * 所以不需要词频表、搭配统计或任何近似器：
+ *
+ * ```
+ * 变体胜出 ⟺ 变体在词库中 且
+ *            ( 原输入不在词库 ? 变体权重 ≥ MIN_KNOWN_WEIGHT
+ *                             : 变体权重 ≥ 原权重 + WEIGHT_MARGIN )
+ * ```
+ *
+ * 两个常数的依据见 `docs/pinyin-correction-redesign.md` §2.2：
+ * 11 个实测 case 全中、2000 个高频编码反例零误报，且在 3.0~4.5 区间完全不敏感。
+ *
+ * ## 两条生成路径
+ *
+ * | 输入 | 生成 | 放置 |
  * | --- | --- | --- |
- * | 硬触发 | Rime 一个真实候选都没有（只剩编码回声） | 候选栏前部（此时前面本来就没东西） |
- * | 软触发 | 首个候选的拼音注释覆盖不到整串输入，或存在「双写折叠」这类高精度假设 | 追加到尾部 |
- * | 模糊音 | 输入完全合法、且用户显式开启 | 追加到尾部 |
+ * | 切得开（`bihao`、`lanfajie`） | 穷尽的**单键相邻替换**变体 | 首位之后 |
+ * | 切不开（`zhonguo`、`xung`） | 音节级编辑距离假设 | 无候选时置前，否则首位之后 |
  *
- * 影子查询的实现方式（[probe]）：用 `replaceRimeKey` 把整串编码换成纠正后的编码、取一次候选、
- * 再立刻换回原串。**任何路径都必须还原成功**，否则宁可让本次进程的纠错整体降级（[degraded]），
- * 也不能让用户看到错乱的拼音。
+ * ## 影子查询只负责取词
+ *
+ * 判断在内存里完成（0.2 ms），[probe] 只在**已经胜出**的 1~3 个编码上跑，
+ * 拿回候选文本后立刻还原组合串。查询失败只是少一条文本，不影响判断；
+ * 还原失败才会让本次进程整体降级（[degraded]），绝不把组合串留在中间态。
  */
 object CorrectionSession {
 
     private const val TAG = "PinyinCorrection"
 
-    private const val MAX_CACHE = 32
+    // ---------------------------------------------------------------- 判定常数
 
-    /** 硬触发最多验证几个编码、总共给几条候选 */
-    private const val HARD_CODES = 3
-    private const val HARD_ITEMS = 5
+    /** 原输入不在词库时，变体至少要有的权重（词库默认档约 4.6~5.0） */
+    private const val MIN_KNOWN_WEIGHT = 4.0f
 
     /**
-     * 软触发最多验证三个编码、总共给三条候选。假设是按「音节数分组轮流取」排的，
-     * 同一个代价档里可能夹着别的切分（`xung` 的 `xun` / `xun'ga` / `xing`），
-     * 只查两个会漏掉真正的目标。
+     * 原输入也在词库时，变体要比它高出的幅度。
+     *
+     * 权重不是纯词频（190 万条里 139 万条落在默认档 5.0），所以不做绝对比较，
+     * 只认「明显更好」：`bihao→nihao` 差 3.9、`zhonggui→zhongguo` 差 3.6、
+     * `mingfan→mingdan` 差 3.6，都在 3.0 之上；而 `shei→zhei` 这类 2.8 的就被挡住。
      */
-    private const val SOFT_CODES = 3
-    private const val SOFT_ITEMS = 3
+    private const val WEIGHT_MARGIN = 3.0f
 
-    /** 模糊音一次只扩展一个变体，避免候选爆炸和无谓的翻译开销 */
+    /**
+     * 只保留与首选权重相差不超过这个幅度的变体。
+     *
+     * 没有这一条时，`lsogong` 除了「老公」(12.8) 还会带出「四公」(7.4)——词库里确实存在，
+     * 但用户根本不会想打它。1.5 只挡掉「明显不是一个量级」的，同档位的近音词（
+     * `haoo` 的 好 15.8 / 还 15.7 / 高 14.8）仍然全部保留，让用户自己挑。
+     */
+    private const val RELATIVE_MARGIN = 1.5f
+
+    // ---------------------------------------------------------------- 生成预算
+
+    /** 近键变体最多生成多少个（判定是纯内存的，可以放宽） */
+    private const val NEAR_KEY_VARIANTS = 12
+
+    /** 非法输入最多取几个假设去裁决 */
+    private const val ILLEGAL_VARIANTS = 6
+
+    /** 两类路径各自最多展示几条纠错候选 */
+    private const val MAX_ITEMS = 3
+
+    /** 单个变体最多贡献几条文本（第一个胜出编码通常最准） */
+    private const val TEXTS_PER_VARIANT = 2
+
+    /** 模糊音是纯召回扩展，默认关闭，结果只追加在最后 */
     private const val FUZZY_VARIANTS = 1
     private const val FUZZY_ITEMS = 2
 
-    /** 近键变体：生成上限 / 探测上限 / 展示上限 / 探测时间预算 */
-    private const val NEAR_KEY_VARIANTS = 8
-    private const val NEAR_KEY_PROBES = 8
-    private const val NEAR_KEY_ITEMS = 2
-    private const val NEAR_KEY_BUDGET_MS = 60L
-
-    /** 影子查询结果缓存：同一个变体编码在相邻几次按键里会反复出现，命中后不再碰引擎 */
+    private const val MAX_CACHE = 32
     private const val MAX_PROBE_CACHE = 64
+
+    /** 候选可信度缓存：一次输入会问很多遍同样的注释 */
+    private const val VERIFIED_CACHE = 128
 
     /** 纠错候选插在哪里 */
     enum class Placement {
@@ -68,7 +104,7 @@ object CorrectionSession {
 
     /**
      * 一次纠错的结果。
-     * @param texts 纠正后验证通过的候选词（按可信度排序）
+     * @param texts 纠正后验证通过的候选词（按权重降序）
      * @param placement 插入位置
      */
     data class Result(val texts: List<String>, val placement: Placement)
@@ -87,7 +123,7 @@ object CorrectionSession {
             size > MAX_CACHE
     }
 
-    /** 影子查询结果缓存（含"查不到"）：变体编码在相邻按键里高度重复，能省掉大部分引擎往返 */
+    /** 影子查询结果缓存（含"查不到"）：相邻按键里同一个编码会反复出现 */
     private val probeCache = object : LinkedHashMap<String, Any>(MAX_PROBE_CACHE, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Any>): Boolean =
             size > MAX_PROBE_CACHE
@@ -95,9 +131,16 @@ object CorrectionSession {
 
     private val EMPTY = Any()
 
+    /** 候选拼音注释 → 是否词库词条。候选栏每次重绘都要问一遍，缓存很值 */
+    private val verifiedCache = object : LinkedHashMap<String, Boolean>(VERIFIED_CACHE, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>): Boolean =
+            size > VERIFIED_CACHE
+    }
+
     fun reset() {
         cache.clear()
         probeCache.clear()
+        verifiedCache.clear()
         lastRawCode = ""
     }
 
@@ -105,15 +148,15 @@ object CorrectionSession {
      * @param composition 当前组合串（原始 preedit，可能含分隔符）
      * @param rimeCandidates Rime 给出的原始候选（含编码回声）
      * @param existingTexts 展示列表里已有的候选文本，用于去重
-     * @param originalSupport 当前编码在词库里的候选总数（词库支持度）
      */
     fun correct(
         composition: String,
         rimeCandidates: List<CandidateListItem>,
         existingTexts: Collection<String>,
-        originalSupport: Int = 0,
     ): Result? {
         if (degraded) return null
+        // 词库没准备好（首次启动、文件缺失、格式不认识）：整体不提示，不做任何猜测
+        val lexicon = EngineLexicon.shared() ?: return null
 
         val prefs = AppPrefs.getInstance()
         if (!prefs.input.pinyinCorrectionEnable.getValue()) return null
@@ -128,44 +171,65 @@ object CorrectionSession {
             return if (cached === EMPTY) null else cached as Result
         }
 
-        val result = evaluate(raw, composition, rimeCandidates, existingTexts, originalSupport)
+        val started = SystemClock.elapsedRealtime()
+        val result = evaluate(raw, composition, rimeCandidates, existingTexts, lexicon)
         cache[raw] = result ?: EMPTY
         if (result != null && result.texts.isNotEmpty()) lastRawCode = raw
+        if (result != null) {
+            Log.d(TAG, "correct raw=$raw took=${SystemClock.elapsedRealtime() - started}ms")
+        }
         return result
     }
 
-    // ---------------------------------------------------------------- 触发判定
+    // ---------------------------------------------------------------- 裁决
 
-    /**
-     * 两条路径：
-     *
-     * 1. **切不开**（[PinyinCorrector.hasCleanParse] 为 false）：真打错了，生成 Top-N 纠错编码去验证；
-     * 2. **切得开**：正常输入，但最后一个音节里可能有**近键误按**（`zhonggui` 的 i 打成 o 就是
-     *    `zhongguo`），所以还会试一次「只换末尾音节里的一个元音」的变体。
-     *
-     * 为什么不用「Rime 有没有候选 / 拼音注释覆盖不覆盖全」判定：Rime 会把 `zhonguo` 切成
-     * `zhong+u+o`、`yiuxi` 切成 `yi+u+xi`，照样给出「中欧」「以」，那两条信号恒为正常。
-     */
     private fun evaluate(
         raw: String,
         composition: String,
         rimeCandidates: List<CandidateListItem>,
         existingTexts: Collection<String>,
-        originalSupport: Int,
+        lexicon: EngineLexicon,
     ): Result? {
         val prefs = AppPrefs.getInstance()
         val realCandidates = rimeCandidates.filter { !isEcho(it.text, composition) }
 
-        if (PinyinCorrector.hasCleanParse(raw)) {
+        // 原输入的权重：切不开（真打错了）时它本来就不在词库里，按 0 处理。
+        // 注意要试全部合法切分（`xian` 既可能是 `xian` 也可能是 `xi+an`），取最大值，
+        // 否则会把「用户打对了的词」估低，凭空冒出纠错建议。
+        val originalWeight = weightOfRaw(lexicon, raw)
+        val clean = PinyinCorrector.hasCleanParse(raw)
+
+        val variants = if (clean) {
             if (raw.length < 3) return null
-            // 近键误按：穷尽生成「换一个相邻键」的合法变体，用词频 + 词库验证并排序
-            val near = buildNearKey(raw, originalSupport, realCandidates.firstOrNull()?.text.orEmpty())
-            if (near != null) {
-                Log.d(TAG, "near-key raw=$raw -> ${near.texts}")
-                return near
+            PinyinCorrector.nearKeyVariants(raw, NEAR_KEY_VARIANTS)
+                .map { Variant(it.code, it.code.split('\''), it.score) }
+        } else {
+            // `z`、`zh` 这种可能只是还没打完；`zhon` 是 `zhong` 的前缀，也先不打扰
+            if (raw.length < 3) return null
+            if (PinyinCorrector.isPrefixOfLongerSyllable(raw)) return null
+            val budget = prefs.input.pinyinCorrectionStrength.getValue().budget()
+            PinyinCorrector.decode(raw, budget)
+                .filter { it.compactCode != raw }
+                .take(ILLEGAL_VARIANTS)
+                .map { Variant(it.code, it.code.split('\''), -it.cost) }
+        }
+        if (variants.isEmpty()) return null
+
+        // 裁决：权重定胜负，同权重时用生成阶段的启发式分（邻键更近 / 编辑代价更低）
+        val ranked = variants
+            .mapNotNull { v ->
+                val weight = weightOf(lexicon, v.syllables)
+                if (beats(weight, originalWeight)) v.copy(weight = weight) else null
             }
-            // 模糊音是纯召回扩展，默认关，结果只放最后
-            if (prefs.input.pinyinFuzzyEnable.getValue() && realCandidates.isNotEmpty()) {
+            .sortedWith(compareByDescending<Variant> { it.weight }.thenByDescending { it.score })
+        val topWeight = ranked.firstOrNull()?.weight ?: 0f
+        val hits = ranked
+            .filter { it.weight >= topWeight - RELATIVE_MARGIN }
+            .take(MAX_ITEMS)
+
+        if (hits.isEmpty()) {
+            // 近键没有结论时，才考虑模糊音这种纯召回扩展（默认关，结果只放最后）
+            if (clean && prefs.input.pinyinFuzzyEnable.getValue() && realCandidates.isNotEmpty()) {
                 val fuzzy = buildFuzzy(raw, existingTexts)
                 if (fuzzy.isNotEmpty()) {
                     Log.d(TAG, "fuzzy raw=$raw -> $fuzzy")
@@ -175,144 +239,112 @@ object CorrectionSession {
             return null
         }
 
-        // 1~2 个字母太少，`z`、`zh` 这种可能只是还没打完；
-        // `zhon` 是 `zhong` 的前缀，也先不打扰
-        if (raw.length < 3) return null
-        if (PinyinCorrector.isPrefixOfLongerSyllable(raw)) return null
+        val texts = collectTexts(hits, existingTexts)
+        if (texts.isEmpty()) return null
 
-        val budget = prefs.input.pinyinCorrectionStrength.getValue().budget()
-        val hypotheses = PinyinCorrector.decode(raw, budget).filter { it.compactCode != raw }
-        if (hypotheses.isEmpty()) return null
-
-        // Rime 一个真实候选都没有 -> 置前（前面本来就没东西）；有候选 -> 插在首个候选之后，
-        // 既让纠错结果看得见，又不改变原来的首位
-        val hard = realCandidates.isEmpty()
-        val placement = if (hard) Placement.FRONT else Placement.AFTER_FIRST
-        val codes = if (hard) HARD_CODES else SOFT_CODES
-        val items = if (hard) HARD_ITEMS else SOFT_ITEMS
-        val firstShare = if (hard) 3 else 2
-
-        val result = build(hypotheses.take(codes), items, firstShare)
-            ?.let { Result(it, placement) }
-        if (result != null) {
-            Log.d(TAG, "trigger raw=$raw placement=$placement -> ${result.texts}")
-        }
-        return result
+        // **输入是否合法，决定谁坐首位。**
+        //
+        // 切不干净（`zlvlnv`、`lsogong`）意味着 Rime 的整条候选链都建立在错误切分上：
+        // 它会把每个字母单独当音节、逐音节各挑一个高频字，拼出「之旅靓女」「来说讴歌欧帖」
+        // 这类覆盖全文的整句，还因为「覆盖全部输入」排在最前。这类结果没有参考价值，
+        // 不是个别候选有问题，而是**整个列表的前提就不成立**——所以不逐个甄别，直接让
+        // 纠错结果接管首位。
+        //
+        // 切得开（`bihao`、`nihao`）说明输入本身有效，Rime 的候选就是对的，
+        // 纠错只作为补充排在首位之后，绝不改动正常排序。
+        val placement = if (clean) Placement.AFTER_FIRST else Placement.FRONT
+        Log.d(TAG, "${if (clean) "near-key" else "correction"} raw=$raw orig=$originalWeight " +
+            "hits=${hits.map { "${it.code}(${it.weight})" }} -> $texts placement=$placement")
+        return Result(texts, placement)
     }
 
-    /**
-     * 近键误按：合法输入里，某个字母可能是按到了旁边的键（`bihao` -> `nihao`）。
-     *
-     * 生成阶段是穷尽的（每个字母 × 每个相邻键），但影子查询有预算，所以：
-     * 1. 先按「声母位置 / 左右相邻 / 靠后音节」排个便宜的序，最多探测 [NEAR_KEY_PROBES] 个；
-     * 2. 总耗时超过 [NEAR_KEY_BUDGET_MS] 就提前收手；
-     * 3. **只提示「比你打出来的那个词更常用」的变体**：有词频表就比词频（`你好 725` 远高于
-     *    `比高 0`），词频表没就绪时退回比词库支持度（候选总数）；
-     * 4. 第一候选必须是「至少两个汉字」的成词，按词频降序、支持度兜底取前 [NEAR_KEY_ITEMS] 条。
-     *
-     * 于是 `bihao` 只会给出 `你好`（`比要/比高` 词频为 0 被过滤），
-     * `zhongguo` 这种本来就很常用的输入也不会因为 `中火` 有候选就冒出建议。
-     */
-    private fun buildNearKey(raw: String, originalSupport: Int, originalWord: String): Result? {
-        val variants = PinyinCorrector.nearKeyVariants(raw, NEAR_KEY_VARIANTS)
-        if (variants.isEmpty()) return null
+    /** 一条待裁决的变体 */
+    private data class Variant(
+        /** 带音节分隔符的编码，交给 [probe] 用 */
+        val code: String,
+        val syllables: List<String>,
+        /** 生成阶段的启发式分，仅用于同权重时排序 */
+        val score: Float,
+        val weight: Float = 0f,
+    )
 
-        val useFrequency = WordFrequency.isReady
-        // 当前首位候选是单字时（说明这个词根本没成词）不能拿它的词频当基准：
-        // 「比」这种单字词频很高，会把「你好」这类真正的词压下去
-        val baseFrequency = if (cjkCount(originalWord) >= 2) WordFrequency.freq(originalWord) else 0
+    /** 原输入不在词库时看绝对门槛，否则看「明显更好」 */
+    private fun beats(weight: Float, originalWeight: Float): Boolean =
+        if (originalWeight <= 0f) weight >= MIN_KNOWN_WEIGHT
+        else weight >= originalWeight + WEIGHT_MARGIN
 
-        val started = SystemClock.elapsedRealtime()
-        // (文本, 词频, 词库支持度)
-        val hits = ArrayList<Triple<String, Int, Int>>(NEAR_KEY_PROBES)
-        for (variant in variants.take(NEAR_KEY_PROBES)) {
-            if (SystemClock.elapsedRealtime() - started > NEAR_KEY_BUDGET_MS) break
-            val probe = probe(variant.code) ?: continue
-            val word = probe.texts.firstOrNull { cjkCount(it) >= 2 } ?: continue
-            val frequency = WordFrequency.freq(word)
-            val stronger = if (useFrequency) frequency > baseFrequency else probe.support > originalSupport
-            if (!stronger) continue
-            hits.add(Triple(word, frequency, probe.support))
-        }
-        if (hits.isEmpty()) return null
-
-        val texts = hits
-            .sortedWith(compareByDescending<Triple<String, Int, Int>> { it.second }.thenByDescending { it.third })
-            .map { it.first }
-            .distinct()
-            .take(NEAR_KEY_ITEMS)
-        return Result(texts, Placement.AFTER_FIRST)
+    /** 音节序列 → 引擎词库里的最高权重；有音节不在引擎音节表里就当 0 */
+    private fun weightOf(lexicon: EngineLexicon, syllables: List<String>): Float {
+        if (syllables.isEmpty()) return 0f
+        val ids = IntArray(syllables.size) { EngineSyllabary.idOf(syllables[it]) }
+        if (ids.any { it < 0 }) return 0f
+        return lexicon.maxWeight(ids)
     }
 
-    // ---------------------------------------------------------------- 影子查询
+    /** 拼音串 → 最高权重，把所有合法切分都试一遍取最大值（`xian` vs `xi+an`） */
+    private fun weightOfRaw(lexicon: EngineLexicon, raw: String): Float {
+        var best = 0f
+        for (split in PinyinCorrector.allSplits(raw)) {
+            val weight = weightOf(lexicon, split)
+            if (weight > best) best = weight
+            // 已经命中主音节切分（`xian` 这种单音节高权重）就不用再试
+            if (best >= STRONG_WEIGHT) break
+        }
+        return best
+    }
 
-    /** 一次影子查询的结果：候选文本 + 该编码在词库里的支持度（候选总数） */
-    private class ProbeData(val texts: List<String>, val support: Int)
+    /** 权重到这个量级基本可以确定是个真词，不必再试其它切分 */
+    private const val STRONG_WEIGHT = 12.0f
+
+    // ---------------------------------------------------------------- 取词
 
     /**
-     * 依次验证纠正后的编码，取回候选词。第一个编码多取几条（它最可能是正确答案），后续各取一条。
-     *
-     * 最后要过一遍**词频闸**：Rime 会把「辣+死+公」拼成 `辣死公` 这种谁都不用的组合，
-     * 这类词在词表里查不到（freq=0）。词表就绪时只保留查得到的词；
-     * 万一全被滤掉（目标本身就是生僻词），退回未过滤的结果，宁可多给一条也不空手。
+     * 只对已经胜出的编码做影子查询，拿回候选文本。
+     * 每个变体最多贡献 [TEXTS_PER_VARIANT] 条，总数不超过 [MAX_ITEMS]。
      */
-    private fun build(
-        hyps: List<PinyinCorrector.Hypothesis>,
-        limit: Int,
-        firstShare: Int,
-    ): List<String>? {
-        if (hyps.isEmpty()) return null
-        val out = ArrayList<String>(limit * 2)
-        for ((index, hypothesis) in hyps.withIndex()) {
-            val share = if (index == 0) firstShare else 1
+    private fun collectTexts(hits: List<Variant>, existingTexts: Collection<String>): List<String> {
+        val seen = HashSet<String>(existingTexts.size + MAX_ITEMS * 2)
+        existingTexts.forEach { seen.add(it.lowercase(Locale.ROOT)) }
+
+        val out = ArrayList<String>(MAX_ITEMS)
+        for (hit in hits) {
             var taken = 0
-            for (text in probe(hypothesis.code)?.texts.orEmpty()) {
-                if (taken >= share) break
+            for (text in probe(hit.code)?.texts.orEmpty()) {
+                if (out.size >= MAX_ITEMS || taken >= TEXTS_PER_VARIANT) break
                 // 回声项（编码本身）、英文、emoji 都不是纠错的目标
                 if (cjkCount(text) == 0) continue
-                if (out.any { it == text }) continue
+                if (!seen.add(text.lowercase(Locale.ROOT))) continue
                 out.add(text)
                 taken++
             }
+            if (out.size >= MAX_ITEMS) break
         }
-        if (out.isEmpty()) return null
-
-        if (!WordFrequency.isReady) return out.take(limit)
-
-        // 词频闸：丢掉词表里没有的组合（「辣死公」这种由音节硬拼出来的），
-        // 排序规则是「成词优先 > 词频高 > 原代价顺序」——用户打了两三个音节时，
-        // 多字词比单字更像目标；只有单音节输入才会变成纯词频比较。
-        val known = out.filter { WordFrequency.freq(it) > 0 }
-        val pool = if (known.isEmpty()) out else known
-        return pool
-            .sortedWith(
-                compareByDescending<String> { if (cjkCount(it) >= 2) 1 else 0 }
-                    .thenByDescending { WordFrequency.freq(it) }
-            )
-            .take(limit)
-            .ifEmpty { null }
+        return out
     }
 
     private fun buildFuzzy(raw: String, existingTexts: Collection<String>): List<String> {
         val seen = HashSet<String>(existingTexts.size + FUZZY_ITEMS * 2)
-        existingTexts.forEach { seen.add(it.lowercase()) }
+        existingTexts.forEach { seen.add(it.lowercase(Locale.ROOT)) }
         val out = ArrayList<String>(FUZZY_ITEMS)
         for (variant in PinyinCorrector.fuzzyVariants(raw, FUZZY_VARIANTS)) {
             for (text in probe(variant)?.texts.orEmpty()) {
                 if (out.size >= FUZZY_ITEMS) break
                 if (!isUsableCandidate(text, variant)) continue
-                if (!seen.add(text.lowercase())) continue
+                if (!seen.add(text.lowercase(Locale.ROOT))) continue
                 out.add(text)
             }
         }
         return out
     }
 
+    /** 一次影子查询的结果 */
+    private class ProbeData(val texts: List<String>)
+
     /**
      * 用纠正后的编码做一次影子查询，拿完候选立刻还原组合串。
      * `replaceRimeKey(caret, len, key)` 的语义是「把组合串的 [caret, caret+len) 换成 key」，
      * 全串替换就是 `(0, 全串长度)`；这条链路 `KeyRecordStack.replacePinyinWithT9Keys` 已经在用。
-     * 「清空重放」只作为还原组合串时的兜底（成本高：最多 24 次词典查询），不再参与探测。
+     * 「清空重放」只作为兜底（成本高：最多 24 次词典查询）。
      * 结果（含查不到）按编码缓存，相邻按键里同一个变体编码反复出现时不必再碰引擎。
      */
     private fun probe(code: String): ProbeData? {
@@ -324,33 +356,29 @@ object CorrectionSession {
 
         // 两条路都要留：组合串带自动分隔符时（l's'o'gong），整串替换 replaceKey 会换不过去，
         // 只有「清空重放」能落到目标编码上——去掉它纠错会整块失效（实测 2026-10-19 23:55）。
-        // 重放最多 24 次词典查询，所以纠错已改成停顿后再算（RimeEngine.scheduleCorrection），不占按键路径。
         val queried = replaceComposition(code) || replayComposition(code)
         if (!queried) {
-            // 两条路都没能把组合串换成目标编码：还原成用户原来的输入，放弃这次验证
             Log.w(TAG, "probe failed: composition=$code unfetchable, saved=$saved")
             restoreComposition(saved)
             return null
         }
 
         val texts = try {
-            val context = Rime.getRimeContext()
-            val all = context?.candidates.orEmpty()
+            val all = Rime.getRimeContext()?.candidates.orEmpty()
             // 只认「拼音注释就是这个编码」的候选：拿回上一次查询的残留菜单时，注释会对不上，
             // 直接丢掉，避免把「稍 / 算」这种无关词当成纠错结果（beijingg 的实际踩坑）
             val matched = all.filter { letters(it.comment) == letters(code) }
             if (matched.isEmpty() && all.isNotEmpty()) {
                 Log.d(TAG, "probe $code: comments mismatch ${all.take(2).map { it.comment }}")
             }
-            // 候选总数当作「词库支持度」：常见编码的候选明显更多
-            ProbeData(matched.map { it.text }, context?.menu?.numCandidates ?: all.size)
+            ProbeData(matched.map { it.text })
         } catch (t: Throwable) {
             Log.w(TAG, "probe $code failed: ${t.message}")
             null
         } finally {
             restoreComposition(saved)
         }
-        // 只缓存「查成功」的结果：查询本身失败（换不过去 / 抛异常）是临时状态，缓存了会让这条编码再也不纠
+        // 只缓存「查成功」的结果：查询本身失败是临时状态，缓存了会让这条编码再也不纠
         if (texts != null) probeCache[code] = texts
         return texts
     }
@@ -389,10 +417,66 @@ object CorrectionSession {
         Rime.clearComposition()
     }
 
+    // ---------------------------------------------------------------- 候选可信度
+
+    /**
+     * 候选的拼音是否真的对应词库里的词条。
+     *
+     * `pinyin.table.bin` 是引擎出**词条候选**用的词典；而 Rime 的 `script_translator` 还会
+     * 额外拼一批「整句」候选——它把每个字母单独当音节、逐音节各挑一个高频字，串成
+     * 「来说讴歌欧帖」「之旅靓女」这种覆盖全部输入的长串。这类串**不在词库里**，
+     * 实测权重恒为 0，而真词（`来说` 13.12、`历史` 13.12、`棕榈树` 8.34）都大于 0。
+     *
+     * 所以「权重是否为 0」就是拼接产物与真词的天然分界，不需要按字数、音节数或
+     * 具体词去猜。
+     *
+     * 三种情况下返回 true（保守，不降级）：词库未就绪、注释为空（英文/emoji/自定义候选）、
+     * 注释里有引擎音节表不认识的音节——判不了就不动。
+     */
+    fun isVerifiedWord(comment: String): Boolean {
+        verifiedCache[comment]?.let { return it }
+        val result = checkVerifiedWord(comment)
+        verifiedCache[comment] = result
+        return result
+    }
+
+    private fun checkVerifiedWord(comment: String): Boolean {
+        val lexicon = EngineLexicon.shared() ?: return true
+        val syllables = syllablesOfComment(comment)
+        if (syllables.isEmpty()) return true
+        val ids = IntArray(syllables.size) { EngineSyllabary.idOf(syllables[it]) }
+        if (ids.any { it < 0 }) return true
+        return lexicon.maxWeight(ids) > 0f
+    }
+
+    /**
+     * 把候选的拼音注释拆成音节。
+     *
+     * 注释形如 `lai'shuo'ou'ge` 或带声调的 `lái'shuō`：字母（含带调字母）拼进当前音节，
+     * 其余字符（撇号、空格）都是分隔符。带 `~` 前缀的是模糊音标记，不参与判断。
+     */
+    private fun syllablesOfComment(comment: String): List<String> {
+        if (comment.isEmpty() || comment.startsWith("~")) return emptyList()
+        val out = ArrayList<String>(8)
+        val sb = StringBuilder(6)
+        comment.forEach { raw ->
+            val lower = raw.lowercaseChar()
+            val base = if (lower in 'a'..'z') lower else BASE_LETTERS[raw] ?: BASE_LETTERS[lower]
+            if (base != null) {
+                sb.append(base)
+            } else if (sb.isNotEmpty()) {
+                out.add(sb.toString())
+                sb.clear()
+            }
+        }
+        if (sb.isNotEmpty()) out.add(sb.toString())
+        return out
+    }
+
     // ---------------------------------------------------------------- 过滤
 
     private fun compact(text: String): String =
-        text.replace("'", "").replace(" ", "").lowercase()
+        text.replace("'", "").replace(" ", "").lowercase(Locale.ROOT)
 
     /** 候选是不是「编码本身」的回声项 */
     private fun isEcho(text: String, composition: String): Boolean =
@@ -410,7 +494,7 @@ object CorrectionSession {
 
     /** 拼音注释归一化：去掉声调、分隔符、大小写，只留 a-z（`zhōng'guó` -> `zhongguo`） */
     private fun letters(text: String): String = buildString(text.length) {
-        text.lowercase().forEach { ch ->
+        text.lowercase(Locale.ROOT).forEach { ch ->
             val base = if (ch in 'a'..'z') ch else BASE_LETTERS[ch] ?: return@forEach
             append(base)
         }
