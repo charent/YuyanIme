@@ -1,35 +1,35 @@
 // 语燕 IME 原生层入口（JNI）
 //
-// 对应 Kotlin: com.yuyan.inputmethod.core.Rime 的 16 个 external 方法。
+// 对应 Kotlin: com.yuyan.inputmethod.core.Rime 的 external 方法。
 //
-// ## 与 1.11 版的差异
+// ## 设计约束（升级引擎时唯一要守住的一条）
 //
-// librime 1.12 起把 C API 收敛到 `RimeApi` 函数表（`rime_get_api()`），不再导出
-// `RimeProcessKey` 之类的独立符号，所有调用都要走 `api->xxx(...)`。
+// 本文件**只** include `rime_api.h`，只调用 `rime_get_api()` 返回的函数表，
+// 不 include、也不引用任何 `rime/*.h` 里的内部 C++ 类（Context / Service / Menu / Table ...）。
+// 这样升级 librime 时这里只需逐个核对函数签名，不必跟进内部实现。
 //
-// `Context` 的内部结构也变了：1.11 时代可以直接改 `ctx.input` / `ctx.caret_pos`，
-// 1.17 里这两个成员是私有的，只能通过 `set_input()` / `set_caret_pos()`，
-// 好在它们内部同样会触发 `update_notifier_`，语义与旧实现一致。
+// 唯一仍绑内部 C++ 的地方是 associate_rear.cpp（联想词，上游没有对应 C API），
+// 已在该文件头标明。
 //
-// 页大小不再能通过 Context 改（1.17 的 Context 没有 menu 成员），
-// 改为在 default.yaml 里配置 `menu/page_size: 100`，`setRimePageSize` 保留为空实现。
+// ## 已迁到 Kotlin 的逻辑（原先写在这里）
+//
+// - 组合串局部替换（原 `rime::Context::ReplaceInput` 的复刻）：现为 `Rime.replaceKey`，
+//   底层只用 `get_input` / `set_input` 两个直通方法；
+// - 键名 → 键码（原 `KeycodeByName` 内置表）：现为常量 `RimeKeycode`；
+// - 翻页与候选下标（原合成 `Page_Down` 键 + 页内下标）：现走
+//   `candidate_list_from_index` / `candidate_list_next` 全量列表，索引即全局下标，
+//   分页完全由 Kotlin 侧（RimeEngine）负责。
 
 #include <jni.h>
 
-#include <algorithm>
-#include <cstring>
 #include <string>
 #include <vector>
 
 #include <android/log.h>
 
 #include "rime_api.h"
-#include "rime/common.h"
-#include "rime/context.h"
-#include "rime/service.h"
 
 #include "associate_rear.h"
-#include "rime_ext.h"
 #include "utf8.h"
 
 // 诊断日志：librime 自身的 glog 在 Android 上被关掉了（ENABLE_LOGGING=OFF），
@@ -44,6 +44,10 @@ RimeSessionId g_session = 0;
 inline RimeApi* Api() {
   return g_api;
 }
+
+// 函数表是自版本化的：老版本 librime 可能没有某些成员，用前先判断存在性
+#define YUYAN_HAS_API(func) \
+  (Api() != nullptr && RIME_STRUCT_HAS_MEMBER(*Api(), Api()->func) && Api()->func)
 
 struct JavaRefs {
   jclass candidate_item = nullptr;
@@ -85,10 +89,8 @@ void EnsureRefs(JNIEnv* env) {
       g_refs.composition, "<init>", "(IIIILjava/lang/String;)V");
 
   g_refs.menu = load("com/yuyan/inputmethod/core/RimeMenu");
-  // (pageSize, pageNo, isLastPage, highlightedCandidateIndex, numCandidates, candidates)
-  g_refs.menu_ctor = env->GetMethodID(
-      g_refs.menu, "<init>",
-      "(IIZII[Lcom/yuyan/inputmethod/core/CandidateListItem;)V");
+  // (pageSize, pageNo, isLastPage, highlightedCandidateIndex, numCandidates)
+  g_refs.menu_ctor = env->GetMethodID(g_refs.menu, "<init>", "(IIZII)V");
 
   g_refs.context = load("com/yuyan/inputmethod/core/RimeContext");
   // (composition, menu, commitTextPreview, selectLabels)
@@ -129,28 +131,12 @@ jobject MakeComposition(JNIEnv* env, const RimeComposition& comp) {
   return obj;
 }
 
+// 候选数组不再编组：候选统一由 getRimeCandidates 走 candidate_list_* 提供，
+// 这里只保留分页元信息，避免每次按键都把整页候选复制进 Java 堆。
 jobject MakeMenu(JNIEnv* env, const RimeMenu& menu) {
-  if (menu.num_candidates <= 0 || menu.candidates == nullptr) {
-    jobjectArray empty = env->NewObjectArray(0, g_refs.candidate_item, nullptr);
-    jobject obj = env->NewObject(g_refs.menu, g_refs.menu_ctor, menu.page_size,
-                                 menu.page_no, JNI_FALSE,
-                                 menu.highlighted_candidate_index, 0, empty);
-    env->DeleteLocalRef(empty);
-    return obj;
-  }
-  jobjectArray items = env->NewObjectArray(
-      menu.num_candidates, g_refs.candidate_item, nullptr);
-  for (int i = 0; i < menu.num_candidates; ++i) {
-    jobject item = MakeCandidateItem(env, menu.candidates[i]);
-    env->SetObjectArrayElement(items, i, item);
-    env->DeleteLocalRef(item);
-  }
-  jobject obj =
-      env->NewObject(g_refs.menu, g_refs.menu_ctor, menu.page_size, menu.page_no,
-                     static_cast<jboolean>(menu.is_last_page != 0),
-                     menu.highlighted_candidate_index, menu.num_candidates, items);
-  env->DeleteLocalRef(items);
-  return obj;
+  return env->NewObject(g_refs.menu, g_refs.menu_ctor, menu.page_size,
+                        menu.page_no, static_cast<jboolean>(menu.is_last_page),
+                        menu.highlighted_candidate_index, menu.num_candidates);
 }
 
 jobject MakeContext(JNIEnv* env, const RimeContext& ctx) {
@@ -267,16 +253,8 @@ Java_com_yuyan_inputmethod_core_Rime_exitRime(JNIEnv*, jclass) {
 }
 
 // ---------------------------------------------------------------------------
-// 会话设置
+// 按键与组合串
 // ---------------------------------------------------------------------------
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_yuyan_inputmethod_core_Rime_setRimePageSize(JNIEnv*, jclass,
-                                                     jint page_size) {
-  // 1.17 的 Context 没有 menu 成员，页大小只能来自 schema 配置（menu/page_size）。
-  // 预置的 default.yaml 已设成 100，这里保留空实现以维持 Java 侧调用契约。
-  (void)page_size;
-}
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_yuyan_inputmethod_core_Rime_processRimeKey(JNIEnv*, jclass, jint keycode,
@@ -294,13 +272,23 @@ Java_com_yuyan_inputmethod_core_Rime_processRimeKey(JNIEnv*, jclass, jint keycod
   return ok == True ? JNI_TRUE : JNI_FALSE;
 }
 
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_yuyan_inputmethod_core_Rime_getRimeInput(JNIEnv* env, jclass) {
+  if (g_session == 0 || !YUYAN_HAS_API(get_input)) {
+    return yuyan::NewJString(env, "");
+  }
+  const char* input = Api()->get_input(g_session);
+  return yuyan::NewJString(env, input);
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_yuyan_inputmethod_core_Rime_replaceRimeKey(JNIEnv* env, jclass,
-                                                    jint caret_pos, jint length,
-                                                    jstring key) {
-  const std::string text = yuyan::JStringToUtf8(env, key);
-  return yuyan::ext::ReplaceInput(g_session, caret_pos, length, text) ? JNI_TRUE
-                                                                     : JNI_FALSE;
+Java_com_yuyan_inputmethod_core_Rime_setRimeInput(JNIEnv* env, jclass,
+                                                  jstring input) {
+  if (g_session == 0 || !YUYAN_HAS_API(set_input)) return JNI_FALSE;
+  // set_input 内部就是「赋值 + 光标移到末尾 + update_notifier」，与旧的
+  // Context::ReplaceInput 末尾两步语义一致（见 docs/engine-stock-vs-custom.md §2.1）
+  const std::string text = yuyan::JStringToUtf8(env, input);
+  return Api()->set_input(g_session, text.c_str()) == True ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -331,8 +319,7 @@ Java_com_yuyan_inputmethod_core_Rime_getRimeContext(JNIEnv* env, jclass) {
   RIME_STRUCT(RimeContext, ctx);
   if (Api()->get_context(g_session, &ctx) != True) return nullptr;
   EnsureRefs(env);
-  // 候选数 × 每个 2 个字符串 + 结构体，局部引用可能超过默认 512
-  env->PushLocalFrame(256 + ctx.menu.num_candidates * 2);
+  env->PushLocalFrame(64);
   jobject result = MakeContext(env, ctx);
   result = env->PopLocalFrame(result);
   Api()->free_context(&ctx);
@@ -387,21 +374,58 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_yuyan_inputmethod_core_Rime_selectRimeCandidate(JNIEnv*, jclass,
                                                          jint index) {
   if (g_session == 0 || Api() == nullptr) return JNI_FALSE;
+  // index 是**全局下标**（不是页内偏移），与 getRimeCandidates 返回的顺序一一对应
   return Api()->select_candidate(g_session, static_cast<size_t>(index)) == True
              ? JNI_TRUE
              : JNI_FALSE;
 }
 
-// ---------------------------------------------------------------------------
-// 私有扩展
-// ---------------------------------------------------------------------------
+// 全量候选列表的一段：从全局下标 offset 起最多取 limit 条。
+//
+// 用 candidate_list_from_index / candidate_list_next 绕过分页：Menu::GetCandidateAt 会按需
+// Prepare(index + 1)，所以取多少就只算多少，不依赖 schema 的 menu/page_size。
+// 返回数组的第 i 项对应全局下标 offset + i（候选必然连续）。
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_com_yuyan_inputmethod_core_Rime_getRimeCandidates(JNIEnv* env, jclass,
+                                                        jint offset,
+                                                        jint limit) {
+  EnsureRefs(env);
+  auto empty_array = [env]() -> jobjectArray {
+    return env->NewObjectArray(0, g_refs.candidate_item, nullptr);
+  };
 
-extern "C" JNIEXPORT jint JNICALL
-Java_com_yuyan_inputmethod_core_Rime_getRimeKeycodeByName(JNIEnv* env, jclass,
-                                                          jstring name) {
-  const std::string key_name = yuyan::JStringToUtf8(env, name);
-  return yuyan::ext::KeycodeByName(key_name.c_str());
+  if (g_session == 0 || limit <= 0 || offset < 0) return empty_array();
+  if (!YUYAN_HAS_API(candidate_list_from_index) ||
+      !YUYAN_HAS_API(candidate_list_next) || !YUYAN_HAS_API(candidate_list_end)) {
+    return empty_array();
+  }
+
+  RimeCandidateListIterator it;
+  if (Api()->candidate_list_from_index(g_session, &it, offset) != True) {
+    return empty_array();
+  }
+
+  // 每个候选要 3 个局部引用（comment/text/对象），预分配够用的容量
+  env->PushLocalFrame(64 + limit * 4);
+  std::vector<jobject> items;
+  items.reserve(static_cast<size_t>(limit));
+  while (static_cast<jint>(items.size()) < limit &&
+         Api()->candidate_list_next(&it) == True) {
+    items.push_back(MakeCandidateItem(env, it.candidate));
+  }
+  Api()->candidate_list_end(&it);
+
+  jobjectArray result = env->NewObjectArray(static_cast<jsize>(items.size()),
+                                            g_refs.candidate_item, nullptr);
+  for (jsize i = 0; i < static_cast<jsize>(items.size()); ++i) {
+    env->SetObjectArrayElement(result, i, items[static_cast<size_t>(i)]);
+  }
+  return static_cast<jobjectArray>(env->PopLocalFrame(result));
 }
+
+// ---------------------------------------------------------------------------
+// 联想词（唯一仍依赖 librime 内部 C++ 的能力，原因见 associate_rear.cpp）
+// ---------------------------------------------------------------------------
 
 extern "C" JNIEXPORT jobjectArray JNICALL
 Java_com_yuyan_inputmethod_core_Rime_getRimeAssociateList(JNIEnv* env, jclass,
@@ -429,70 +453,3 @@ Java_com_yuyan_inputmethod_core_Rime_selectRimeAssociate(JNIEnv*, jclass,
   yuyan::AssociateRear rear(g_session);
   return rear.SelectAssociateWord(index) ? JNI_TRUE : JNI_FALSE;
 }
-
-// ---------------------------------------------------------------------------
-// ext 实现
-// ---------------------------------------------------------------------------
-
-namespace yuyan {
-namespace ext {
-
-bool ReplaceInput(RimeSessionId session_id, int pos, int length,
-                  const std::string& text) {
-  auto session = rime::Service::instance().GetSession(session_id);
-  if (!session) return false;
-  auto* ctx = session->context();
-  if (ctx == nullptr) return false;
-
-  // 以下逻辑由 libyuyanime.so 的 rime::Context::ReplaceInput 反汇编还原
-  // （1.11.2 @ 0x1ed420，140 字节，见 docs/engine-re-findings.md）：
-  //   if (pos + len > input.length()) return false;
-  //   input.replace(pos, len, text);
-  //   caret_pos = input.length();
-  //   update_notifier(this);
-  //
-  // 1.17 把 input_/caret_pos_ 改成了私有成员，但 set_input() 的实现正是
-  // 「赋值 + caret 移到末尾 + update_notifier_」，与原实现逐条对应。
-  const std::string& current = ctx->input();
-  const size_t p = static_cast<size_t>(pos);
-  const size_t n = static_cast<size_t>(length);
-  if (pos < 0 || length < 0 || p + n > current.size()) return false;
-
-  std::string next = current;
-  next.replace(p, n, text);
-  ctx->set_input(next);
-  return true;
-}
-
-void GetAssociateWords(RimeSessionId session_id, const std::string& text,
-                       int limit, std::vector<std::string>* out) {
-  AssociateRear rear(session_id);
-  rear.GetAssociateWord(text, limit, out);
-}
-
-bool SelectAssociateWord(RimeSessionId session_id, int index) {
-  AssociateRear rear(session_id);
-  return rear.SelectAssociateWord(index);
-}
-
-int KeycodeByName(const char* name) {
-  // 上游未导出键名表，这里内置工程实际用到的键（X11 keysym）
-  if (name == nullptr) return 0;
-  const std::string n(name);
-  if (n == "Page_Down" || n == "Next") return 0xFF56;
-  if (n == "Page_Up" || n == "Prior") return 0xFF55;
-  if (n == "Return" || n == "Enter") return 0xFF0D;
-  if (n == "BackSpace") return 0xFF08;
-  if (n == "Tab") return 0xFF09;
-  if (n == "Escape") return 0xFF1B;
-  if (n == "space") return 0x20;
-  if (n == "Left") return 0xFF51;
-  if (n == "Up") return 0xFF52;
-  if (n == "Right") return 0xFF53;
-  if (n == "Down") return 0xFF54;
-  if (n.size() == 1) return static_cast<int>(static_cast<unsigned char>(n[0]));
-  return 0;
-}
-
-}  // namespace ext
-}  // namespace yuyan

@@ -87,6 +87,14 @@ object CorrectionSession {
     private const val MAX_CACHE = 32
     private const val MAX_PROBE_CACHE = 64
 
+    /**
+     * 影子查询一次取多少条候选。
+     *
+     * 原来直接读 `get_context` 返回的那一页（schema 的 `menu/page_size`，100 条）。
+     * 候选改走全量列表后这里显式取同样的条数，保证「注释匹配编码」的召回范围不变。
+     */
+    private const val PROBE_CANDIDATES = 100
+
     /** 候选可信度缓存：一次输入会问很多遍同样的注释 */
     private const val VERIFIED_CACHE = 128
 
@@ -364,7 +372,7 @@ object CorrectionSession {
         }
 
         val texts = try {
-            val all = Rime.getRimeContext()?.candidates.orEmpty()
+            val all = Rime.getCandidates(0, PROBE_CANDIDATES)
             // 只认「拼音注释就是这个编码」的候选：拿回上一次查询的残留菜单时，注释会对不上，
             // 直接丢掉，避免把「稍 / 算」这种无关词当成纠错结果（beijingg 的实际踩坑）
             val matched = all.filter { letters(it.comment) == letters(code) }

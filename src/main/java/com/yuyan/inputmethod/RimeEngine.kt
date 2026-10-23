@@ -30,8 +30,24 @@ object RimeEngine {
     /**
      * 与 [showCandidates] 一一对应：每一项在 Rime 原始候选数组里的下标，-1 表示自定义候选（不经过 Rime）。
      * 剔除"编码本身"候选后，展示下标与 Rime 下标不再相等，选词必须查这张表。
+     * 这里的下标是**全局下标**（`candidate_list_*` 的顺序），与 `select_candidate` 的入参一致。
      */
     private var rimeIndexes: IntArray = IntArray(0)
+
+    /**
+     * 每批候选的条数。
+     *
+     * 与 schema 的 `menu/page_size`（5）解耦：候选栏靠 [Rime.getCandidates] 按需往后取。
+     * 这里的值直接等于「每敲一个键，引擎要翻译 + 过滤多少个候选」——取 30 够铺满一屏候选面板，
+     * 又比原先一次算满 100 条少 70% 的工作量；再往后翻只是继续取下一段，不再重算。
+     */
+    private const val CANDIDATE_PAGE_SIZE = 30
+
+    /** 下一次从全量候选列表的哪个全局下标开始取 */
+    private var candidateOffset = 0
+
+    /** 全量候选列表是否已经取完（上一批不足 [CANDIDATE_PAGE_SIZE]） */
+    private var candidatesExhausted = true
 
     var showComposition: String = "" // 候选词上方展示的拼音
     var preCommitText: String = "" // 待提交的文字
@@ -137,29 +153,30 @@ object RimeEngine {
         return updateCandidatesOrCommitText()
     }
 
-    fun getNextPageCandidates(): Array<CandidateListItem> {
-        return if (Rime.hasRight()) {
-            Rime.processKey(keyRecordStack.getRimeKeycodeByName("Page_Down"), 0)
-           val candidates = Rime.getRimeContext()!!.candidates
-            when (charCase) {
-                KeyEvent.META_SHIFT_ON -> {
-                    for (item in candidates) {
-                        item.text = item.text.lowercase().replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }
-                    }
-                }
-                KeyEvent.META_CAPS_LOCK_ON -> {
-                    for (item in candidates) {
-                        item.text = item.text.uppercase()
-                    }
-                }
-                else -> {
-                    for (item in candidates) {
-                        item.text = item.text.lowercase()
-                    }
+    /**
+     * 从全量候选列表里取一段，并同步推进分页游标。
+     *
+     * [offset] 是 librime 的候选全局下标，返回的第 i 项对应下标 `offset + i`；
+     * 返回条数不足 [CANDIDATE_PAGE_SIZE] 即说明后面没有了。
+     */
+    private fun fetchCandidates(offset: Int): List<CandidateListItem> {
+        val batch = Rime.getCandidates(offset, CANDIDATE_PAGE_SIZE)
+        candidateOffset = offset + batch.size
+        candidatesExhausted = batch.size < CANDIDATE_PAGE_SIZE
+        return batch
+    }
+
+    /** 按当前大小写状态改写候选文本（英文方案下的 Shift / CapsLock 输出） */
+    private fun applyCharCase(items: List<CandidateListItem>) {
+        when (charCase) {
+            KeyEvent.META_SHIFT_ON -> items.forEach { item ->
+                item.text = item.text.lowercase().replaceFirstChar {
+                    if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString()
                 }
             }
-            candidates
-        } else emptyArray()
+            KeyEvent.META_CAPS_LOCK_ON -> items.forEach { item -> item.text = item.text.uppercase() }
+            else -> items.forEach { item -> item.text = item.text.lowercase() }
+        }
     }
 
     fun selectPinyin(index: Int) {
@@ -170,19 +187,25 @@ object RimeEngine {
 
     /**
      * 追加下一页候选，并同步维护 [rimeIndexes]（去重、索引映射都在这里收口，避免调用方各管一半）。
-     * 注意：Rime 的候选下标是"页内偏移"，所以新页里的第 i 项对应索引就是 i。
+     *
+     * 旧实现合成 `Page_Down` 键翻页，再把**页内偏移**当索引记下来，翻到第二页之后选词会落回
+     * 第一页的同位候选（`menu/page_size: 100`，第 101 项起必现）。现在取的是全量列表的全局下标，
+     * 选词原样交给 `select_candidate`，页/全局两套语义只剩一套。
      */
     fun appendNextPage(): Int {
-        val page = getNextPageCandidates()
+        if (candidatesExhausted) return 0
+        val base = candidateOffset
+        val page = fetchCandidates(base)
         if (page.isEmpty()) return 0
+        applyCharCase(page)
         val existing = HashSet<String>(showCandidates.size + page.size)
         showCandidates.forEach { existing.add(it.text.lowercase(Locale.ROOT)) }
         val addItems = ArrayList<CandidateListItem>(page.size)
         val addIndexes = ArrayList<Int>(page.size)
-        page.forEachIndexed { pageIndex, item ->
+        page.forEachIndexed { i, item ->
             if (existing.add(item.text.lowercase(Locale.ROOT))) {
                 addItems.add(item)
-                addIndexes.add(pageIndex)
+                addIndexes.add(base + i)
             }
         }
         if (addItems.isEmpty()) return 0
@@ -203,6 +226,8 @@ object RimeEngine {
                 addAll(remaining.filterNotNull().map { CandidateListItem("", it) })
             }.distinctBy { it.text.lowercase(Locale.ROOT) }
             rimeIndexes = IntArray(showCandidates.size) { -1 } // 联想词不走 selectCandidate
+            candidateOffset = 0
+            candidatesExhausted = true
             showComposition = ""
         }
     }
@@ -219,6 +244,8 @@ object RimeEngine {
         showCandidates = emptyList()
         rimeIndexes = IntArray(0)
         customPhraseSize = 0
+        candidateOffset = 0
+        candidatesExhausted = true
         pinyins = emptyArray()
         showComposition = ""
         preCommitText = ""
@@ -310,10 +337,14 @@ object RimeEngine {
             showComposition = ""
             showCandidates = emptyList()
             rimeIndexes = IntArray(0)
+            candidateOffset = 0
+            candidatesExhausted = true
             return preCommitText
         }
-        val rimeContext = Rime.getRimeContext()
-        val candidates = rimeContext?.candidates?.asList() ?: emptyList()
+        // 组合串直接读 Rime 缓存的那份：所有会改引擎状态的调用（processKey / replaceKey /
+        // selectCandidate / clearComposition / selectSchema）内部都已经刷新过；
+        // pushKey 返回 false 的那条路径引擎状态本来就没变。这里不再多拉一次 get_context。
+        val candidates = fetchCandidates(0)
         customPhraseSize = 0
         val compositionText = Rime.compositionText
         // 定位"编码本身"候选（echo_translator 的产物）；只有还存在别的候选时才剔掉它，

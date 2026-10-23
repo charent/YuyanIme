@@ -23,6 +23,13 @@ data class RimeComposition(
     val preedit: String? = "",
 )
 
+/**
+ * 候选区元信息。
+ *
+ * **不再携带候选数组**：候选统一由 [Rime.getCandidates] 走 librime 的
+ * `candidate_list_*` 全量列表提供，分批取、下标就是全局下标。
+ * 这里保留 `numCandidates` 之类的字段只为判断「有没有菜单」。
+ */
 @Keep
 data class RimeMenu(
     val pageSize: Int = 0,
@@ -30,34 +37,7 @@ data class RimeMenu(
     val isLastPage: Boolean = false,
     val highlightedCandidateIndex: Int = 0,
     val numCandidates: Int = 0,
-    val candidates: Array<CandidateListItem> = arrayOf(),
-) {
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (javaClass != other?.javaClass) return false
-
-        other as RimeMenu
-
-        if (pageSize != other.pageSize) return false
-        if (pageNo != other.pageNo) return false
-        if (isLastPage != other.isLastPage) return false
-        if (highlightedCandidateIndex != other.highlightedCandidateIndex) return false
-        if (numCandidates != other.numCandidates) return false
-        if (!candidates.contentEquals(other.candidates)) return false
-
-        return true
-    }
-
-    override fun hashCode(): Int {
-        var result = pageSize
-        result = 31 * result + pageNo
-        result = 31 * result + isLastPage.hashCode()
-        result = 31 * result + highlightedCandidateIndex
-        result = 31 * result + numCandidates
-        result = 31 * result + candidates.contentHashCode()
-        return result
-    }
-}
+)
 
 @Keep
 data class RimeCommit(
@@ -71,12 +51,6 @@ data class RimeContext(
     val commitTextPreview: String? = "",
     val selectLabels: Array<String> = arrayOf(),
 ) {
-    val candidates: Array<CandidateListItem>
-        get() {
-            val numCandidates = menu?.numCandidates ?: 0
-            return if (numCandidates != 0) menu!!.candidates else arrayOf()
-        }
-
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (javaClass != other?.javaClass) return false

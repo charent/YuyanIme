@@ -1,5 +1,8 @@
 // 联想词（AssociateRear）
 //
+// 注意：这是原生层**唯一**依赖 librime 内部 C++ 类（rime::Table / rime::StringTable）
+// 的模块，升级引擎时必须复核这三处签名，详见 associate_rear.cpp 文件头。
+//
 // 旧版在 librime 内部实现（AssociateRear / Table::Predict / 用户词库联想条目），
 // 源码不公开。这里用上游 1.17 自带能力重建：
 //   rime::Table 打开 build/pinyin.table.bin

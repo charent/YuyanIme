@@ -1,5 +1,21 @@
 // 联想词（AssociateRear）实现
 //
+// ###########################################################################
+// ## 本文件是整个原生层**唯一**依赖 librime 内部 C++ 类的地方（补丁面 0，内部依赖 1）
+// ##
+// ## 升级 librime 时必须复核：
+// ##   1. rime/dict/table.h 里 `Table::Load()` / `Table::metadata()` 的签名；
+// ##   2. `Table::Metadata` 的字段布局（`string_table` / `string_table_size`）；
+// ##   3. rime/dict/string_table.h 里 `StringTable(const char*, size_t)` /
+// ##      `Predict(query, vector<StringId>*)` / `GetString(StringId)` 的签名。
+// ## 1.11 -> 1.17 就是在这里踩过一次（Metadata 字段挪位）。
+// ##
+// ## 上游没有预测/联想接口（rime_api.h 98 个成员里没有 predict/associate），
+// ## 所以这部分保留 native。若将来要彻底解耦，替代方案是用桌面脚本把
+// ## table.bin 的字符串表 dump 成自建索引，由 Kotlin 侧 mmap + 二分前缀查找
+// ## （见 docs/engine-stock-vs-custom.md §2.3 方案 C3）。
+// ###########################################################################
+//
 // ## 与旧实现的差异
 //
 // 旧版把联想做在 librime 内部（`AssociateRear` + `Table::Predict` + 用户词库联想条目），

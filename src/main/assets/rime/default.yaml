@@ -15,4 +15,4 @@ schema_list:
   - schema: english
 
 menu:
-  page_size: 100
+  page_size: 5
