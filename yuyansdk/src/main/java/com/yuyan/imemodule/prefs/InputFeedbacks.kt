@@ -41,6 +41,28 @@ object InputFeedbacks {
         }
     }
 
+    /**
+     * 无 View 的震动入口（Compose 侧使用）。
+     *
+     * 语义对齐 [hapticFeedback]：0 = 交给系统默认（这里退化成 10ms 的极短震动，
+     * 因为 Compose 的手势回调里没有 View 可以 `performHapticFeedback`），1 = 关闭。
+     */
+    fun hapticFeedback() {
+        val duration = when (vibrationAmplitude) {
+            0 -> 10L
+            1 -> return
+            2 -> 5L
+            3 -> 30L
+            else -> 50L
+        }
+        if (hasAmplitudeControl) {
+            vibrator.vibrate(VibrationEffect.createOneShot(duration, -1))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(duration)
+        }
+    }
+
     enum class SoundEffect {
         Standard, SpaceBar, Delete, Return
     }

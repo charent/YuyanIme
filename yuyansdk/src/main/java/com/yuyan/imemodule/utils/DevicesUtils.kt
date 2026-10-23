@@ -54,6 +54,12 @@ object DevicesUtils {
         hapticFeedback(view!!)
     }
 
+    /** Compose 侧无 View 的震动入口 */
+    @JvmStatic
+    fun tryVibrate() {
+        com.yuyan.imemodule.prefs.InputFeedbacks.hapticFeedback()
+    }
+
 
     /**
      * 播放按键按下的声音

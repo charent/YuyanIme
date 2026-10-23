@@ -3,7 +3,6 @@ package com.yuyan.imemodule.application
 import android.annotation.SuppressLint
 import android.content.Context
 import androidx.appcompat.app.AppCompatDelegate
-import androidx.preference.PreferenceManager
 import com.yuyan.imemodule.data.emojicon.YuyanEmojiCompat
 import com.yuyan.imemodule.data.theme.ThemeManager
 import com.yuyan.imemodule.data.theme.ThemeManager.prefs
@@ -13,6 +12,7 @@ import com.yuyan.imemodule.prefs.AppPrefs
 import com.yuyan.imemodule.service.ClipboardHelper
 import com.yuyan.imemodule.service.InputDispatcher
 import com.yuyan.imemodule.utils.AssetUtils.copyFileOrDir
+import com.yuyan.imemodule.utils.defaultSharedPreferences
 import com.yuyan.imemodule.utils.thread.ThreadPoolUtils
 import com.yuyan.inputmethod.correction.EngineLexicon
 
@@ -27,7 +27,7 @@ class Launcher {
     }
 
     private fun currentInit() {
-        AppPrefs.init(PreferenceManager.getDefaultSharedPreferences(context))
+        AppPrefs.init(context.defaultSharedPreferences())
         ThemeManager.init(context.resources.configuration)
         DataBaseKT.instance.sideSymbolDao().getAllSideSymbolPinyin()  //操作一次查询，提前创建数据库，避免使用时才创建数据库
         ClipboardHelper.init()

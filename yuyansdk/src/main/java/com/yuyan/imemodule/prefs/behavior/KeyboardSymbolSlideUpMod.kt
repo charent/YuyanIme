@@ -1,6 +1,7 @@
 package com.yuyan.imemodule.prefs.behavior
 
-import com.yuyan.imemodule.view.preference.ManagedPreference
+import com.yuyan.imemodule.prefs.ManagedPreference
+
 
 enum class KeyboardSymbolSlideUpMod {
     SHORT,

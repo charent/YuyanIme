@@ -1,84 +1,67 @@
 package com.yuyan.imemodule.keyboard
 
-import com.yuyan.imemodule.application.Launcher
 import com.yuyan.imemodule.manager.InputModeSwitcher
-import com.yuyan.imemodule.keyboard.container.BaseContainer
-import com.yuyan.imemodule.keyboard.container.CandidatesContainer
-import com.yuyan.imemodule.keyboard.container.ClipBoardContainer
-import com.yuyan.imemodule.keyboard.container.HandwritingContainer
-import com.yuyan.imemodule.keyboard.container.InputBaseContainer
-import com.yuyan.imemodule.keyboard.container.InputViewParent
-import com.yuyan.imemodule.keyboard.container.QwertyContainer
-import com.yuyan.imemodule.keyboard.container.SettingsContainer
-import com.yuyan.imemodule.keyboard.container.SymbolContainer
-import com.yuyan.imemodule.keyboard.container.T9TextContainer
-import com.yuyan.imemodule.prefs.AppPrefs
+import com.yuyan.inputmethod.HWEngine
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * 键盘显示管理类
+ * 键盘类型与「键盘缓存失效」的唯一状态源。
+ *
+ * Phase 5 之后不再持有任何 View / Container：旧实现的 `mInputView`、`keyboards` 缓存、
+ * `currentContainer` 全部删除，只保留两路状态供 Compose 订阅：
+ *
+ * - [keyboardType]：要显示哪套键盘（输入 / 符号 / 设置 / 候选 / 剪贴板 …）；
+ * - [revision]：`clearKeyboard()` 的失效计数，Any 处改了尺寸、主题、键位、侧边栏数据后
+ *   只要调用 `clearKeyboard()`，键盘就会重新从 `KeyboardLoaderUtil` 取软键盘数据。
  */
 class KeyboardManager {
+
     enum class KeyboardType {
         T9, QWERTY, LX17, QWERTYABC, NUMBER, SYMBOL, SETTINGS, HANDWRITING, CANDIDATES, ClipBoard, TEXTEDIT
     }
-    private lateinit var mInputView: InputView
-    private lateinit var mKeyboardRootView: InputViewParent
-    private val keyboards = HashMap<KeyboardType, BaseContainer?>()
-    private lateinit var mCurrentKeyboardName: KeyboardType
-    var currentContainer: BaseContainer? = null
-        private set
 
-    fun setData(keyboardRootView: InputViewParent, inputView: InputView) {
-        mKeyboardRootView = keyboardRootView
-        mInputView = inputView
-    }
+    private val _keyboardType = MutableStateFlow<KeyboardType?>(null)
+    val keyboardType: StateFlow<KeyboardType?> = _keyboardType.asStateFlow()
 
+    private val _revision = MutableStateFlow(0)
+    val revision: StateFlow<Int> = _revision.asStateFlow()
+
+    /** 丢弃键盘缓存（键帽数据、尺寸、主题等变化后调用） */
     fun clearKeyboard() {
-        keyboards.clear()
-        if (::mInputView.isInitialized) mInputView.initView(mInputView.context)
+        _revision.value = _revision.value + 1
     }
 
     fun switchKeyboard(layout: Int = InputModeSwitcher.skbLayout) {
         val keyboardName = when (layout) {
             0x1000 -> KeyboardType.QWERTY
             0x4000 -> KeyboardType.QWERTYABC
-            0x3000 -> KeyboardType.HANDWRITING
+            // 手写引擎不可用时（16KB 页设备）不允许停留在手写模式：
+            // 上次退出时若正处在手写模式，恢复时会走到这里
+            0x3000 -> if (HWEngine.isAvailable) KeyboardType.HANDWRITING else KeyboardType.QWERTY
             0x5000 -> KeyboardType.NUMBER
             0x6000 -> KeyboardType.LX17
             0x8000 -> KeyboardType.TEXTEDIT
             else -> KeyboardType.T9
         }
         switchKeyboard(keyboardName)
-        if (::mInputView.isInitialized)mInputView.updateCandidateBar()
     }
 
     fun switchKeyboard(keyboardName: KeyboardType) {
-        if (!::mKeyboardRootView.isInitialized) return
-        var container = keyboards[keyboardName]
-        if (container == null) {
-            container = when (keyboardName) {
-                KeyboardType.CANDIDATES ->  CandidatesContainer(Launcher.instance.context, mInputView)
-                KeyboardType.HANDWRITING -> HandwritingContainer(Launcher.instance.context, mInputView)
-                KeyboardType.NUMBER -> T9TextContainer(Launcher.instance.context, mInputView, InputModeSwitcher.MASK_SKB_LAYOUT_NUMBER)
-                KeyboardType.QWERTY -> QwertyContainer(Launcher.instance.context, mInputView, InputModeSwitcher.MASK_SKB_LAYOUT_QWERTY_PINYIN)
-                KeyboardType.SETTINGS -> SettingsContainer(Launcher.instance.context, mInputView)
-                KeyboardType.SYMBOL -> SymbolContainer(Launcher.instance.context, mInputView)
-                KeyboardType.QWERTYABC -> QwertyContainer(Launcher.instance.context, mInputView, InputModeSwitcher.MASK_SKB_LAYOUT_QWERTY_ABC)
-                KeyboardType.LX17 -> T9TextContainer(Launcher.instance.context, mInputView, InputModeSwitcher.MASK_SKB_LAYOUT_LX17)
-                KeyboardType.ClipBoard -> ClipBoardContainer(Launcher.instance.context, mInputView)
-                KeyboardType.TEXTEDIT -> QwertyContainer(Launcher.instance.context, mInputView, InputModeSwitcher.MASK_SKB_LAYOUT_TEXTEDIT)
-                else ->  T9TextContainer(Launcher.instance.context, mInputView, AppPrefs.getInstance().internal.inputDefaultMode.getValue() and InputModeSwitcher.MASK_SKB_LAYOUT)
-            }
-            container.updateSkbLayout()
-            keyboards[keyboardName] = container
-        }
-        mKeyboardRootView.showView(container)
-        mCurrentKeyboardName = keyboardName
-        currentContainer = container
+        _keyboardType.value = keyboardName
     }
 
+    val currentType: KeyboardType?
+        get() = _keyboardType.value
+
+    /** 当前是否停留在「可以输入字符」的键盘上（符号/设置/候选/剪贴板都不算） */
     val isInputKeyboard: Boolean
-        get() = currentContainer is InputBaseContainer
+        get() = when (currentType) {
+            KeyboardType.SYMBOL, KeyboardType.SETTINGS, KeyboardType.CANDIDATES,
+            KeyboardType.ClipBoard, null -> false
+            else -> true
+        }
 
     companion object {
         private var mInstance: KeyboardManager? = null

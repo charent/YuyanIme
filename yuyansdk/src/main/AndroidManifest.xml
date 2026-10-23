@@ -31,7 +31,7 @@
             android:exported="false"
             android:launchMode="singleTask" />
         <activity
-            android:name=".ui.fragment.theme.CustomThemeActivity"
+            android:name=".ui.theme.CustomThemeActivity"
             android:configChanges="orientation|screenSize"
             android:exported="false"
             android:label="@string/edit_theme" />

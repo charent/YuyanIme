@@ -1,11 +1,13 @@
-
 package com.yuyan.imemodule.data.theme
 
-import android.content.Context
 import androidx.annotation.StringRes
 import com.yuyan.imemodule.prefs.ManagedPreferenceUi
-import com.yuyan.imemodule.view.preference.ThemeSelectPreference
 
+/**
+ * 主题选择项的 UI 元数据（浅色主题 / 深色主题两行）。
+ *
+ * Phase 4 起不再创建 `ThemeSelectPreference`，由 Compose 设置渲染器弹主题列表。
+ */
 class ManagedThemePreferenceUi(
     @StringRes
     val title: Int,
@@ -14,13 +16,4 @@ class ManagedThemePreferenceUi(
     @StringRes
     val summary: Int? = null,
     enableUiOn: (() -> Boolean)? = null
-) : ManagedPreferenceUi<ThemeSelectPreference>(key, enableUiOn) {
-    override fun createUi(context: Context) = ThemeSelectPreference(context, defaultValue).apply {
-        key = this@ManagedThemePreferenceUi.key
-        isIconSpaceReserved = false
-        isSingleLineTitle = false
-        if (this@ManagedThemePreferenceUi.summary != null)
-            setSummary(this@ManagedThemePreferenceUi.summary)
-        setTitle(this@ManagedThemePreferenceUi.title)
-    }
-}
+) : ManagedPreferenceUi(key, enableUiOn)

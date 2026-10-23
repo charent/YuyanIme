@@ -3,8 +3,6 @@ package com.yuyan.imemodule.prefs
 
 import android.content.SharedPreferences
 import androidx.annotation.StringRes
-import androidx.preference.PreferenceScreen
-import com.yuyan.imemodule.view.preference.ManagedPreference
 
 abstract class ManagedPreferenceCategory(
     @StringRes val title: Int,
@@ -121,14 +119,5 @@ abstract class ManagedPreferenceCategory(
         secondary.register()
         ui.registerUi()
         return primary to secondary
-    }
-
-    override fun createUi(screen: PreferenceScreen) {
-        val ctx = screen.context
-        managedPreferencesUi.forEach {
-            screen.addPreference(it.createUi(ctx).apply {
-                isEnabled = it.isEnabled()
-            })
-        }
     }
 }

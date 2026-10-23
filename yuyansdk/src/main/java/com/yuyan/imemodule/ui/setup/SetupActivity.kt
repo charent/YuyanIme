@@ -1,4 +1,3 @@
-
 package com.yuyan.imemodule.ui.setup
 
 import android.app.NotificationChannel
@@ -7,117 +6,75 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.view.View
-import android.widget.Button
-import androidx.activity.OnBackPressedCallback
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.fromHtml
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationCompat
-import androidx.core.os.bundleOf
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.fragment.app.Fragment
-import androidx.fragment.app.FragmentActivity
-import androidx.viewpager2.adapter.FragmentStateAdapter
-import androidx.viewpager2.widget.ViewPager2
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.yuyan.imemodule.R
-import com.yuyan.imemodule.databinding.ActivitySetupBinding
+import com.yuyan.imemodule.compose.settings.SettingsTheme
 import com.yuyan.imemodule.prefs.AppPrefs
 import com.yuyan.imemodule.ui.activity.SettingsActivity
-import com.yuyan.imemodule.ui.setup.SetupPage.Companion.firstUndonePage
-import com.yuyan.imemodule.ui.setup.SetupPage.Companion.isLastPage
 import com.yuyan.imemodule.utils.InputMethodUtil
 import com.yuyan.imemodule.utils.notificationManager
 import com.yuyan.imemodule.utils.startActivity
+import kotlinx.coroutines.launch
 
-class SetupActivity : FragmentActivity() {
-
-    private lateinit var viewPager: ViewPager2
-
-    private val viewModel: SetupViewModel by viewModels()
-
-    private lateinit var prevButton: Button
-    private lateinit var nextButton: Button
+/**
+ * 启用引导（Phase 4 起为 Compose）。
+ *
+ * 页面内容与判定仍由 [SetupPage] 提供（纯逻辑，未迁移），
+ * ViewPager2 + FragmentStateAdapter 换成 `HorizontalPager`。
+ * 代码裁剪/输入法选择等动作直接走 `SetupPage.getButtonAction`。
+ */
+class SetupActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val binding = ActivitySetupBinding.inflate(layoutInflater)
-        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, windowInsets ->
-            val sysBars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
-            binding.root.setPadding(sysBars.left, sysBars.top, sysBars.right, sysBars.bottom)
-            windowInsets
-        }
-        setContentView(binding.root)
-        prevButton = binding.prevButton.apply {
-            text = getString(R.string.prev)
-            setOnClickListener { viewPager.currentItem -= 1 }
-        }
-        nextButton = binding.nextButton.apply {
-            setOnClickListener {
-                if (viewPager.currentItem != SetupPage.entries.size - 1)
-                    viewPager.currentItem += 1
-                else finish()
+        setContent {
+            SettingsTheme {
+                SetupScreen()
             }
         }
-        viewPager = binding.viewpager.apply {
-            adapter = Adapter()
-            registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
-                override fun onPageSelected(position: Int) {
-                    viewModel.isAllDone.value = viewModel.isAllDone.value
-                    prevButton.visibility = if (position != 0) View.VISIBLE else View.GONE
-                    nextButton.text =
-                        getString(if (position.isLastPage()) R.string.done else R.string.next)
-                }
-            })
-        }
-        viewModel.isAllDone.observe(this) { allDone ->
-            nextButton.apply {
-                // hide next button for the last page when allDone == false
-                (allDone || !viewPager.currentItem.isLastPage()).let {
-                    visibility = if (it) View.VISIBLE else View.GONE
-                }
-            }
-        }
-        firstUndonePage()?.let { viewPager.currentItem = it.ordinal }
         createNotificationChannel()
     }
 
-    override fun onStart() {
-        super.onStart()
-        if(!AppPrefs.getInstance().internal.privacyPolicySure.getValue()){
-            startActivity<SettingsActivity>()
-            finish()
-            return
-        }else if(InputMethodUtil.isSelected()){
-            finish()
-        } else if(InputMethodUtil.isEnabled()){
-            viewPager.currentItem = SetupPage.entries.size - 1
-        }
-    }
-
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if(InputMethodUtil.isSelected()){
-            finish()
-        } else if(InputMethodUtil.isEnabled()){
-            viewPager.currentItem = SetupPage.entries.size - 1
-        }
-    }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                getText(R.string.setup_channel),
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply { description = CHANNEL_ID }
-            notificationManager.createNotificationChannel(channel)
-        }
-    }
-
     override fun onPause() {
-        if (SetupPage.hasUndonePage())
+        if (SetupPage.hasUndonePage()) {
             NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_sdk_launcher_transparent)
                 .setContentTitle(getText(R.string.app_name))
@@ -128,12 +85,13 @@ class SetupActivity : FragmentActivity() {
                         this,
                         0,
                         Intent(this, javaClass),
-                        PendingIntent.FLAG_IMMUTABLE
+                        PendingIntent.FLAG_IMMUTABLE,
                     )
                 )
                 .setAutoCancel(true)
                 .build()
                 .let { notificationManager.notify(NOTIFY_ID, it) }
+        }
         super.onPause()
     }
 
@@ -142,18 +100,126 @@ class SetupActivity : FragmentActivity() {
         super.onResume()
     }
 
-    private inner class Adapter : FragmentStateAdapter(this) {
-        override fun getItemCount(): Int = SetupPage.entries.size
-
-        override fun createFragment(position: Int): Fragment =
-            SetupFragment().apply {
-                arguments = bundleOf(SetupFragment.PAGE to SetupPage.valueOf(position))
-            }
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                getText(R.string.setup_channel),
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply { description = CHANNEL_ID }
+            notificationManager.createNotificationChannel(channel)
+        }
     }
 
     companion object {
         private const val CHANNEL_ID = "setup"
         private const val NOTIFY_ID = 233
         fun shouldShowUp() = SetupPage.hasUndonePage()
+    }
+}
+
+@Composable
+private fun SetupScreen() {
+    val context = LocalContext.current
+    val activity = context as? ComponentActivity
+    val pages = remember { SetupPage.entries }
+    val pagerState = rememberPagerState(
+        initialPage = (SetupPage.firstUndonePage()?.ordinal ?: 0).coerceIn(0, pages.size - 1),
+        pageCount = { pages.size },
+    )
+    var doneMask by remember { mutableStateOf(pages.map { it.isDone() }) }
+    val allDone = doneMask.all { it }
+    val scope = rememberCoroutineScope()
+
+    // 旧实现用 onWindowFocusChanged / onResume 同步各页完成状态
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) doneMask = pages.map { it.isDone() }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // onStart 的三条短路：未同意隐私 → 去设置页；已选输入法 → 关闭；已启用 → 直接到最后一页
+    LaunchedEffect(Unit) {
+        if (!AppPrefs.getInstance().internal.privacyPolicySure.getValue()) {
+            context.startActivity<SettingsActivity>()
+            activity?.finish()
+        } else if (InputMethodUtil.isSelected()) {
+            activity?.finish()
+        } else if (InputMethodUtil.isEnabled()) {
+            pagerState.scrollToPage(pages.size - 1)
+        }
+    }
+
+    Scaffold { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding),
+        ) {
+            HorizontalPager(state = pagerState, modifier = Modifier.weight(1f)) { index ->
+                val page = pages[index]
+                val hint = when (page) {
+                    SetupPage.Enable -> R.string.enable_ime_hint
+                    SetupPage.Select -> R.string.select_ime_hint
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        text = AnnotatedString.fromHtml(
+                            context.getString(hint, context.getString(R.string.app_name))
+                        ),
+                        fontSize = 15.sp,
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(Modifier.height(24.dp))
+                    if (doneMask[index]) {
+                        Text(
+                            text = context.getString(R.string.done),
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 16.sp,
+                        )
+                    } else {
+                        Button(onClick = { page.getButtonAction(context) }) {
+                            Text(page.getButtonText(context).toString())
+                        }
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (pagerState.currentPage > 0) {
+                    OutlinedButton(
+                        onClick = { scope.launch { pagerState.scrollToPage(pagerState.currentPage - 1) } },
+                        modifier = Modifier.weight(1f),
+                    ) { Text(context.getString(R.string.prev)) }
+                }
+                val isLast = pagerState.currentPage == pages.size - 1
+                if (!isLast || allDone) {
+                    Button(
+                        onClick = {
+                            if (!isLast) scope.launch { pagerState.scrollToPage(pagerState.currentPage + 1) }
+                            else activity?.finish()
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(context.getString(if (isLast) R.string.done else R.string.next))
+                    }
+                }
+            }
+        }
     }
 }

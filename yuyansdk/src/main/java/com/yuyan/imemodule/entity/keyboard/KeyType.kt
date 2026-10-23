@@ -1,6 +1,6 @@
 package com.yuyan.imemodule.entity.keyboard
 
-import com.yuyan.imemodule.view.preference.ManagedPreference
+import com.yuyan.imemodule.prefs.ManagedPreference
 
 enum class KeyType {
     AccentKey,

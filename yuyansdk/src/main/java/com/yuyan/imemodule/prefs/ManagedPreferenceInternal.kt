@@ -2,7 +2,6 @@
 package com.yuyan.imemodule.prefs
 
 import android.content.SharedPreferences
-import com.yuyan.imemodule.view.preference.ManagedPreference
 
 abstract class ManagedPreferenceInternal(private val sharedPreferences: SharedPreferences) :
     ManagedPreferenceProvider() {

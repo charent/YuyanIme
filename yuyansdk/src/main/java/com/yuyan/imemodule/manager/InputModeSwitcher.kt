@@ -5,7 +5,6 @@ import android.view.inputmethod.EditorInfo
 import com.yuyan.imemodule.application.CustomConstant
 import com.yuyan.imemodule.prefs.AppPrefs.Companion.getInstance
 import com.yuyan.imemodule.keyboard.KeyboardManager
-import com.yuyan.imemodule.keyboard.container.InputBaseContainer
 import com.yuyan.imemodule.service.InputDispatcher
 import com.yuyan.imemodule.utils.KeyboardLoaderUtil
 
@@ -242,7 +241,7 @@ object InputModeSwitcher {
             saveInputMode(newInputMode)
             KeyboardManager.instance.switchKeyboard()
         }
-        (KeyboardManager.instance.currentContainer as? InputBaseContainer)?.updateStates()
+        KeyboardManager.instance.clearKeyboard()  // 旧的容器 updateStates() 已随 View 层删除：让键盘缓存失效重取带新大小写状态的键位
     }
 
     /**
@@ -289,7 +288,7 @@ object InputModeSwitcher {
         }
         InputDispatcher.setCharCase(mToggleStates.modifiers)
         lsatClickTime = System.currentTimeMillis()
-        (KeyboardManager.instance.currentContainer as? InputBaseContainer)?.updateStates()
+        KeyboardManager.instance.clearKeyboard()  // 旧的容器 updateStates() 已随 View 层删除：让键盘缓存失效重取带新大小写状态的键位
     }
 
     val isNumberSkb: Boolean
@@ -357,7 +356,7 @@ object InputModeSwitcher {
     fun resetCharCase() {
         if(mToggleStates.modifiers == KeyEvent.META_SHIFT_ON){
             mToggleStates.modifiers = MASK_CASE_LOWER
-            (KeyboardManager.instance.currentContainer as? InputBaseContainer)?.updateStates()
+            KeyboardManager.instance.clearKeyboard()  // 旧的容器 updateStates() 已随 View 层删除：让键盘缓存失效重取带新大小写状态的键位
         }
     }
 

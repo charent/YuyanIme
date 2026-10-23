@@ -6,7 +6,7 @@ import androidx.annotation.Keep
 import com.yuyan.imemodule.prefs.AppPrefs
 import com.yuyan.imemodule.prefs.WeakHashSet
 import com.yuyan.imemodule.utils.isDarkMode
-import com.yuyan.imemodule.view.preference.ManagedPreference
+import com.yuyan.imemodule.prefs.ManagedPreference
 
 object ThemeManager {
 

@@ -1,26 +1,24 @@
-
 package com.yuyan.imemodule.prefs
 
-import androidx.preference.PreferenceScreen
-import com.yuyan.imemodule.view.preference.ManagedPreference
-
+/**
+ * 一组偏好项 + 对应的 UI 元数据。
+ *
+ * Phase 4 起不再依赖 `androidx.preference.PreferenceScreen`：
+ * Compose 侧直接遍历 [managedPreferencesUi] 渲染，取值靠 [managedPreferences]。
+ */
 abstract class ManagedPreferenceProvider {
 
     private val _managedPreferences: MutableMap<String, ManagedPreference<*>> = mutableMapOf()
 
-    private val _managedPreferencesUi: MutableList<ManagedPreferenceUi<*>> = mutableListOf()
+    private val _managedPreferencesUi: MutableList<ManagedPreferenceUi> = mutableListOf()
 
     val managedPreferences: Map<String, ManagedPreference<*>>
         get() = _managedPreferences
 
-    val managedPreferencesUi: List<ManagedPreferenceUi<*>>
+    val managedPreferencesUi: List<ManagedPreferenceUi>
         get() = _managedPreferencesUi
 
-    open fun createUi(screen: PreferenceScreen) {
-
-    }
-
-    fun ManagedPreferenceUi<*>.registerUi() {
+    fun ManagedPreferenceUi.registerUi() {
         _managedPreferencesUi.add(this)
     }
 

@@ -279,4 +279,14 @@
     <string name="keyboard_style_mod_samsung">三星</string>
 
     <string name="show_virtual_keyboard_with_external">物理键盘显示软键盘（插拔键盘生效）</string>
+
+    <!-- 16KB 页设备上手写引擎不可用时的降级提示 -->
+    <string name="handwriting_unavailable_title">当前设备不支持手写输入</string>
+    <string name="handwriting_unavailable_summary">手写引擎为 4KB 页对齐的本地库，在 16KB 内存页设备上无法加载，系统已自动禁用手写入口。其余输入方式不受影响。</string>
+
+    <!-- Compose 设置页（Phase 4） -->
+    <string name="edit">编辑</string>
+    <string name="custom_theme">自定义</string>
+    <string name="skb_prefix_add">新增</string>
+    <string name="skb_prefix_empty">还没有侧边栏符号</string>
 </resources>

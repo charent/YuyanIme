@@ -8,11 +8,10 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import androidx.annotation.IdRes
 import androidx.core.app.NotificationCompat
-import androidx.navigation.NavDeepLinkBuilder
 import com.yuyan.imemodule.R
 import com.yuyan.imemodule.application.Launcher
+import com.yuyan.imemodule.compose.settings.SettingsDest
 import com.yuyan.imemodule.ui.activity.SettingsActivity
 import kotlin.system.exitProcess
 
@@ -24,33 +23,30 @@ object AppUtil {
         }
     }
 
-    private fun launchMainToDest(context: Context, @IdRes dest: Int, arguments: Bundle? = null) {
-        NavDeepLinkBuilder(context)
-            .setComponentName(SettingsActivity::class.java)
-            .setGraph(R.navigation.settings_nav)
-            .setDestination(dest)
-            .setArguments(arguments)
-            .createTaskStackBuilder()
-            /**
-             * [androidx.core.app.TaskStackBuilder.getIntents] would add unwanted flags
-             * [Intent.FLAG_ACTIVITY_CLEAR_TASK] and [Intent.FLAG_ACTIVITY_TASK_ON_HOME]
-             * so we must launch the Intent by ourselves
-             */
-            .editIntentAt(0)?.apply {
+    /**
+     * 跳到设置里的某个页面。
+     *
+     * Phase 4 起设置改用 `navigation-compose`，`NavDeepLinkBuilder` 与之不兼容，
+     * 因此改成显式 intent extra：`SettingsActivity` 读取 [SettingsDest.EXTRA_DEST] 作为首跳目的地。
+     */
+    private fun launchMainToDest(context: Context, dest: SettingsDest) {
+        context.startActivity(
+            Intent(context, SettingsActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
-                context.startActivity(this)
+                putExtra(SettingsDest.EXTRA_DEST, dest.route)
             }
+        )
     }
 
     fun launchSettingsToHandwriting(context: Context) =
-        launchMainToDest(context, R.id.handwritingSettingsFragment)
-
+        launchMainToDest(context, SettingsDest.Handwriting)
 
     fun launchSettingsToKeyboard(context: Context) =
-        launchMainToDest(context, R.id.keyboardFeedbackFragment)
+        launchMainToDest(context, SettingsDest.Feedback)
 
+    /** `arguments` 仅为兼容旧调用点（侧边栏 tab 由页面内 TabRow 决定，与旧实现行为一致） */
     fun launchSettingsToPrefix(context: Context, arguments: Bundle? = null) =
-        launchMainToDest(context, R.id.sidebarSymbolFragment, arguments)
+        launchMainToDest(context, SettingsDest.Sidebar)
 
     fun launchMarketforYuyan(context: Context){
         val packageName = Launcher.instance.context.packageName

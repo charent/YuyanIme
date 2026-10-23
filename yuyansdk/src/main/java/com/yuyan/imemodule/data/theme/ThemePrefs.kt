@@ -6,7 +6,7 @@ import com.yuyan.imemodule.R
 import com.yuyan.imemodule.prefs.ManagedPreferenceCategory
 import com.yuyan.imemodule.prefs.behavior.KeyboardSymbolSlideUpMod
 import com.yuyan.imemodule.prefs.behavior.SkbStyleMode
-import com.yuyan.imemodule.view.preference.ManagedPreference
+import com.yuyan.imemodule.prefs.ManagedPreference
 
 class ThemePrefs(sharedPreferences: SharedPreferences) :
     ManagedPreferenceCategory(R.string.theme, sharedPreferences) {

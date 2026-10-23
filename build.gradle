@@ -5,10 +5,16 @@ buildscript {
         google()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.3.2'
-        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22'
-        classpath 'org.jetbrains.kotlin:kotlin-serialization:2.0.0'
-        classpath 'com.google.devtools.ksp:com.google.devtools.ksp.gradle.plugin:2.0.0-1.0.23'
+        classpath 'com.android.tools.build:gradle:8.9.3'
+        // Kotlin 工具链版本基线（KOTLIN_VERSION）：kotlin-gradle-plugin / serialization / KSP / stdlib
+        // 必须是同一条版本线，历史上前三者曾长期不一致（1.9.22 / 2.0.0 / 2.0.0-1.0.23）。
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.20'
+        classpath 'org.jetbrains.kotlin:kotlin-serialization:2.1.20'
+        // KSP 采用 <kotlin>-<ksp> 版本格式。这里锁定 1.0.x（KSP1）版本线：
+        // KSP2 自 2.0.x 起默认开启，需 Room >= 2.7，会带来连带升级，本阶段不引入。
+        classpath 'com.google.devtools.ksp:com.google.devtools.ksp.gradle.plugin:2.1.20-1.0.32'
+        // Kotlin 2.x 起 Compose 编译器随 Kotlin 发布，插件版本必须与 Kotlin 一致
+        classpath 'org.jetbrains.kotlin:compose-compiler-gradle-plugin:2.1.20'
     }
 }
 

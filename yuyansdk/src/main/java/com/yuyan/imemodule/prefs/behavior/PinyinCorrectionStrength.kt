@@ -1,6 +1,7 @@
 package com.yuyan.imemodule.prefs.behavior
 
-import com.yuyan.imemodule.view.preference.ManagedPreference
+import com.yuyan.imemodule.prefs.ManagedPreference
+
 
 /**
  * 纠错力度：直接映射成 [com.yuyan.inputmethod.correction.PinyinCorrector] 的总代价预算。

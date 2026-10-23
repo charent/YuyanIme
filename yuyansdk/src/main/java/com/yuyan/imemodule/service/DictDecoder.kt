@@ -1,18 +1,40 @@
 package com.yuyan.imemodule.service
 
-import androidx.lifecycle.MutableLiveData
 import com.yuyan.inputmethod.RimeEngine
 import com.yuyan.inputmethod.core.CandidateListItem
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * 词库解码操作对象
+ * 词库解码操作对象。
+ *
+ * Phase 5 起状态只有一条通道：不可变快照 [candidateState]。
+ * 旧的 `candidatesLiveData` 与其在 `ImeService` 里的 `observeForever` 已删除，
+ * 取值统一走 [candidates]，避免两套状态出现短暂不一致。
  */
 object DictDecoder {
 
     var activeCandidate = 0  //当前显示候选词位置
     var activeCandidateBar = 0  //当前显示候选词位置
-    // 候选词列表
-    val candidatesLiveData = MutableLiveData<List<CandidateListItem>>()
+
+    /**
+     * 候选快照。
+     *
+     * @param generation 整表替换时 +1，追加时不变（视图据此区分「重绑」和「增量插入」）
+     * @param prefixRevision 拼音前缀（T9 左侧候选拼音）变化时 +1
+     */
+    data class CandidateState(
+        val candidates: List<CandidateListItem> = emptyList(),
+        val generation: Int = 0,
+        val composingText: String = "",
+        val isAssociate: Boolean = false,
+        val prefixRevision: Int = 0,
+    )
+
+    private val _candidateState = MutableStateFlow(CandidateState())
+    val candidateState: StateFlow<CandidateState> = _candidateState.asStateFlow()
+
     // 是否是联想词
     var isAssociate = false
 
@@ -28,7 +50,29 @@ object DictDecoder {
 
     private fun publish(list: List<CandidateListItem>) {
         generation++
-        candidatesLiveData.value = list
+        _candidateState.value = CandidateState(
+            candidates = list,
+            generation = generation,
+            composingText = runCatching { RimeEngine.showComposition }.getOrDefault(""),
+            isAssociate = isAssociate,
+            prefixRevision = _candidateState.value.prefixRevision,
+        )
+    }
+
+    /** 只追加、不换代：候选被追加一批（翻页预取） */
+    private fun publishAppend(list: List<CandidateListItem>) {
+        _candidateState.value = _candidateState.value.copy(
+            candidates = list,
+            composingText = runCatching { RimeEngine.showComposition }.getOrDefault(""),
+            isAssociate = isAssociate,
+        )
+    }
+
+    private fun bumpPrefix() {
+        _candidateState.value = _candidateState.value.copy(
+            prefixRevision = _candidateState.value.prefixRevision + 1,
+            composingText = runCatching { RimeEngine.showComposition }.getOrDefault(""),
+        )
     }
 
     /**
@@ -41,19 +85,14 @@ object DictDecoder {
         publish(emptyList())
     }
 
+    val candidates: List<CandidateListItem>
+        get() = _candidateState.value.candidates
+
     val isCandidatesEmpty: Boolean
-        // 候选词列表是否为空
-        get() = candidatesLiveData.value.isNullOrEmpty()
+        get() = candidates.isEmpty()
 
     val candidateSize: Int
-        // 候选词列表是否为空
-        get() = if(isCandidatesEmpty) 0 else candidatesLiveData.value!!.size
-
-
-    val candidates: List<CandidateListItem>
-        // 候选词列表是否为空
-        get() = candidatesLiveData.value?:emptyList()
-
+        get() = candidates.size
 
     // 增加拼写字符，重置候选词状态
     fun inputAction() {
@@ -69,6 +108,7 @@ object DictDecoder {
     fun selectPrefix(position: Int) {
         activeCandidate = 0
         activeCandidateBar = 0
+        bumpPrefix()
     }
 
     val prefixs: Array<String>  //获取拼音组合
@@ -101,7 +141,7 @@ object DictDecoder {
         get() {
             val fresh = RimeEngine.appendNextPage()
             // 追加不算换"代"：视图会走增量插入，不重绑、不动滚动位置
-            if (fresh > 0) candidatesLiveData.postValue(RimeEngine.showCandidates)
+            if (fresh > 0) publishAppend(RimeEngine.showCandidates)
             return fresh
         }
 
@@ -112,15 +152,15 @@ object DictDecoder {
         activeCandidate = 0
         activeCandidateBar = 0
         var candidate: String
-        if(!InputDispatcher.isFinish || isAssociate) { // Rime和联想
+        if (!InputDispatcher.isFinish || isAssociate) { // Rime和联想
             if (candId >= 0) InputDispatcher.getWordSelectedWord(candId)
             val newCandidates = RimeEngine.showCandidates
             candidate = if (newCandidates.isNotEmpty()) RimeEngine.preCommitText
-            else if (candId in 0..<candidateSize) RimeEngine.preCommitText.ifEmpty { candidatesLiveData.value!![candId].text }
+            else if (candId in 0..<candidateSize) RimeEngine.preCommitText.ifEmpty { candidates[candId].text }
             else ""
             publish(newCandidates)
         } else {  // 手写
-            candidate = if (candId in 0..<candidateSize) candidatesLiveData.value!![candId].text  else ""
+            candidate = if (candId in 0..<candidateSize) candidates[candId].text else ""
             reset()
         }
         return candidate
@@ -146,9 +186,7 @@ object DictDecoder {
     /**
      * 获得指定的候选词
      */
-    fun getCandidate(candId: Int): CandidateListItem? {
-        return candidatesLiveData.value?.getOrNull(candId)
-    }
+    fun getCandidate(candId: Int): CandidateListItem? = candidates.getOrNull(candId)
 
     // 更新候选词
     fun cacheCandidates(words: Array<CandidateListItem>, associate: Boolean = false) {

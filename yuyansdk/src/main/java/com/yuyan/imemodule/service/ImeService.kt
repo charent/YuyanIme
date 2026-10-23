@@ -12,111 +12,146 @@ import android.view.ViewGroup
 import android.view.inputmethod.CursorAnchorInfo
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
-import androidx.lifecycle.Observer
-import com.yuyan.imemodule.callback.IKeyboardView
-import com.yuyan.imemodule.candidate.CandidateView
+import com.yuyan.imemodule.compose.HardwareCandidateView
+import com.yuyan.imemodule.compose.ImeComposeRoot
 import com.yuyan.imemodule.data.emojicon.YuyanEmojiCompat
-import com.yuyan.imemodule.data.theme.Theme
 import com.yuyan.imemodule.data.theme.ThemeManager.OnThemeChangeListener
 import com.yuyan.imemodule.data.theme.ThemeManager.addOnChangedListener
 import com.yuyan.imemodule.data.theme.ThemeManager.onSystemDarkModeChange
 import com.yuyan.imemodule.data.theme.ThemeManager.removeOnChangedListener
-import com.yuyan.imemodule.keyboard.InputView
 import com.yuyan.imemodule.keyboard.KeyboardManager
-import com.yuyan.imemodule.keyboard.container.ClipBoardContainer
 import com.yuyan.imemodule.manager.InputModeSwitcher
 import com.yuyan.imemodule.prefs.AppPrefs.Companion.getInstance
-import com.yuyan.imemodule.prefs.behavior.SkbMenuMode
+import com.yuyan.imemodule.prefs.ManagedPreference
 import com.yuyan.imemodule.singleton.EnvironmentSingleton
 import com.yuyan.imemodule.utils.KeyboardLoaderUtil
 import com.yuyan.imemodule.utils.StringUtils
 import com.yuyan.imemodule.utils.isDarkMode
-import com.yuyan.imemodule.view.preference.ManagedPreference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import splitties.bitflags.hasFlag
 
 /**
- * Main class of the Pinyin input method. 输入法服务
+ * Main class of the Pinyin input method. 输入法服务。
+ *
+ * Phase 5 起只有一条 UI 路径：Compose 根（[ImeComposeRoot]）+ Compose 候选栏
+ * （[HardwareCandidateView]）。旧 `InputView` / `CandidateView` 与灰度开关已删除，
+ * 因此这里不再出现「两套 View 二选一」的分支。
  */
 class ImeService : InputMethodService() {
+
     private var isHardwareKeyboard = false
     private var showVirtualKeyboardOnPhysicalKeyboard = false
-    private lateinit var  candidateView:CandidateView
-    private lateinit var  inputView:InputView
-    private lateinit var mInputView:IKeyboardView
-    private val onThemeChangeListener = OnThemeChangeListener { _: Theme? -> if (::mInputView.isInitialized) mInputView.updateTheme()}
+
+    /** 软键盘根视图：服务存活期间复用，旋屏/换输入框只重排不重建组合 */
+    private var composeRoot: ImeComposeRoot? = null
+
+    /** 物理键盘模式下的候选栏（系统独立窗口） */
+    private var hardwareCandidateView: HardwareCandidateView? = null
+
+    private val onThemeChangeListener = OnThemeChangeListener {
+        // 主题变了：键帽/背景都要重新读取，直接让键盘缓存失效
+        composeRoot?.controller?.bumpKeyboardRevision()
+    }
+
     private val clipboardUpdateContentListener = ManagedPreference.OnChangeListener<String> { _, value ->
-        if(getInstance().clipboard.clipboardSuggestion.getValue()){
-            if(value.isNotBlank()) {
-                if(KeyboardManager.instance.currentContainer is ClipBoardContainer
-                    && (KeyboardManager.instance.currentContainer as ClipBoardContainer).getMenuMode() == SkbMenuMode.ClipBoard ){
-                    (KeyboardManager.instance.currentContainer as ClipBoardContainer).showClipBoardView(SkbMenuMode.ClipBoard)
-                } else {
-                    if (::mInputView.isInitialized) mInputView.showSymbols(arrayOf(value))
-                }
+        if (getInstance().clipboard.clipboardSuggestion.getValue() && value.isNotBlank()) {
+            composeRoot?.controller?.let { controller ->
+                controller.bumpClipboardRevision()
+                controller.dispatcher.showSymbols(arrayOf(value))
             }
         }
     }
-    private val showVirtualKeyboardOnPhysicalKeyboardListener = ManagedPreference.OnChangeListener<Boolean> { _, value ->
-        showVirtualKeyboardOnPhysicalKeyboard = value
-        handleHardwareKeyboard()
-        updateInputViewShown()
-    }
-    private val candidatesObserver = Observer<Any?> { _ ->
-        if (::mInputView.isInitialized) mInputView.onCandidateChanged()
-    }
+
+    private val showVirtualKeyboardOnPhysicalKeyboardListener =
+        ManagedPreference.OnChangeListener<Boolean> { _, value ->
+            showVirtualKeyboardOnPhysicalKeyboard = value
+            handleHardwareKeyboard()
+            updateInputViewShown()
+        }
 
     override fun onCreate() {
         super.onCreate()
         addOnChangedListener(onThemeChangeListener)
         // 进程重建时需要先把已保存的开关值读回来，否则会一直按“有实体键盘”处理，软键盘渲染不出来
-        showVirtualKeyboardOnPhysicalKeyboard = getInstance().keyboardSetting.showVirtualKeyboardOnPhysicalKeyboard.getValue()
-        getInstance().keyboardSetting.showVirtualKeyboardOnPhysicalKeyboard.registerOnChangeListener(showVirtualKeyboardOnPhysicalKeyboardListener)
+        showVirtualKeyboardOnPhysicalKeyboard =
+            getInstance().keyboardSetting.showVirtualKeyboardOnPhysicalKeyboard.getValue()
+        getInstance().keyboardSetting.showVirtualKeyboardOnPhysicalKeyboard
+            .registerOnChangeListener(showVirtualKeyboardOnPhysicalKeyboardListener)
+        getInstance().internal.clipboardUpdateContent
+            .registerOnChangeListener(clipboardUpdateContentListener)
         handleHardwareKeyboard()
-        DictDecoder.candidatesLiveData.observeForever(candidatesObserver)
+        // 提前建根并推进到 CREATED，让首帧组合可以在键盘真正显示前预热
+        ensureComposeRoot()
     }
 
-    override fun onCreateInputView(): View {
-        if(!::inputView.isInitialized)inputView = InputView(baseContext, this)
-        if(!isHardwareKeyboard)mInputView = inputView
-        return inputView
+    /**
+     * 取（必要时创建）Compose 根视图。
+     *
+     * 与旧 `InputView` 一样缓存单例：旋屏、切换输入框、窗口重建都复用同一个 View 与同一份组合，
+     * 避免每次唤起都重建 `Recomposer`（首帧开销远大于常驻）。
+     */
+    private fun ensureComposeRoot(): ImeComposeRoot {
+        composeRoot?.let { return it }
+        return ImeComposeRoot(baseContext, this).also {
+            it.imeLifecycleOwner.onCreate()
+            composeRoot = it
+        }
     }
+
+    override fun onCreateInputView(): View = ensureComposeRoot()
 
     override fun onCreateCandidatesView(): View {
-        if(!::candidateView.isInitialized)candidateView = CandidateView(baseContext, this)
-        if(isHardwareKeyboard) mInputView = candidateView
-        currentInputConnection?.requestCursorUpdates(InputConnection.CURSOR_UPDATE_MONITOR)
-        return candidateView
+        hardwareCandidateView?.let { return it }
+        val root = ensureComposeRoot()
+        return HardwareCandidateView(baseContext, root.controller, root.imeLifecycleOwner).also {
+            hardwareCandidateView = it
+            currentInputConnection?.requestCursorUpdates(InputConnection.CURSOR_UPDATE_MONITOR)
+        }
     }
 
     override fun onEvaluateInputViewShown(): Boolean {
         super.onEvaluateInputViewShown()
-        return if(showVirtualKeyboardOnPhysicalKeyboard) true else !isHardwareKeyboard
+        return if (showVirtualKeyboardOnPhysicalKeyboard) true else !isHardwareKeyboard
     }
 
     override fun onStartInput(editorInfo: EditorInfo?, restarting: Boolean) {
         super.onStartInput(editorInfo, restarting)
-        if(editorInfo != null) {
+        if (editorInfo != null) {
             YuyanEmojiCompat.setEditorInfo(editorInfo)
             InputModeSwitcher.requestInputWithSkb(editorInfo)
         }
-        if(isHardwareKeyboard)updateCandidatesViewShown(true)
+        if (isHardwareKeyboard) updateCandidatesViewShown(true)
     }
 
     override fun onStartInputView(editorInfo: EditorInfo, restarting: Boolean) {
-        if (::mInputView.isInitialized) mInputView.onStartInputView(editorInfo, restarting)
+        composeRoot?.let { root ->
+            // 编辑器类型可能变了（数字框/搜索框），按当前 input 模式重算键盘类型
+            KeyboardManager.instance.switchKeyboard()
+            root.controller.dispatcher.onStartInputView(restarting)
+            root.imeLifecycleOwner.show()
+        }
         super.onStartInputView(editorInfo, restarting)
     }
 
+    override fun onFinishInputView(finishingInput: Boolean) {
+        // 键盘收起只降到 CREATED，组合保留（方案 §2.1 第 4 条）
+        composeRoot?.imeLifecycleOwner?.hide()
+        super.onFinishInputView(finishingInput)
+    }
+
     override fun onDestroy() {
+        hardwareCandidateView?.destroy()
+        hardwareCandidateView = null
+        composeRoot?.destroyComposition()
+        composeRoot = null
         super.onDestroy()
-        DictDecoder.candidatesLiveData.removeObserver(candidatesObserver)
-        getInstance().keyboardSetting.showVirtualKeyboardOnPhysicalKeyboard.unregisterOnChangeListener(showVirtualKeyboardOnPhysicalKeyboardListener)
+        getInstance().keyboardSetting.showVirtualKeyboardOnPhysicalKeyboard
+            .unregisterOnChangeListener(showVirtualKeyboardOnPhysicalKeyboardListener)
+        getInstance().internal.clipboardUpdateContent
+            .unregisterOnChangeListener(clipboardUpdateContentListener)
         removeOnChangedListener(onThemeChangeListener)
-        getInstance().internal.clipboardUpdateContent.unregisterOnChangeListener(clipboardUpdateContentListener)
     }
 
     /**
@@ -131,23 +166,43 @@ class ImeService : InputMethodService() {
             KeyboardLoaderUtil.instance.clearKeyboardMap()
             KeyboardManager.instance.clearKeyboard()
             KeyboardManager.instance.switchKeyboard()
-            if (::mInputView.isInitialized) mInputView.setConfiguration(newConfig)
+            // Compose 根的高度是显式指定的，旋屏/改比例后需要重算，否则沿用旧方向的高度
+            composeRoot?.let { root ->
+                val target = root.preferredKeyboardHeight()
+                root.layoutParams?.let { lp ->
+                    if (target > 0 && lp.height != target) {
+                        lp.height = target
+                        root.layoutParams = lp
+                    }
+                }
+                root.requestLayout()
+            }
         }
         onSystemDarkModeChange(newConfig.isDarkMode())
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        return if (0 != event.repeatCount || event.isShiftPressed || event.isMetaPressed) super.onKeyDown(keyCode, event)
-        else if(event.isCtrlPressed && keyCode != KeyEvent.KEYCODE_SPACE)super.onKeyDown(keyCode, event)
-        else if (::mInputView.isInitialized) mInputView.processKeyDown(keyCode, event) || super.onKeyDown(keyCode, event)
-        else super.onKeyDown(keyCode, event)
+        return if (0 != event.repeatCount || event.isShiftPressed || event.isMetaPressed)
+            super.onKeyDown(keyCode, event)
+        else if (event.isCtrlPressed && keyCode != KeyEvent.KEYCODE_SPACE)
+            super.onKeyDown(keyCode, event)
+        else {
+            val handled = composeRoot?.controller?.dispatcher
+                ?.processHardwareKeyDown(keyCode, event) ?: false
+            handled || super.onKeyDown(keyCode, event)
+        }
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
-        return if (0 != event.repeatCount || event.isShiftPressed || event.isMetaPressed) super.onKeyUp(keyCode, event)
-        else if(event.isCtrlPressed && keyCode != KeyEvent.KEYCODE_SPACE)super.onKeyUp(keyCode, event)
-        else if (::mInputView.isInitialized) mInputView.processKeyUp(event) || super.onKeyUp(keyCode, event)
-        else super.onKeyUp(keyCode, event)
+        return if (0 != event.repeatCount || event.isShiftPressed || event.isMetaPressed)
+            super.onKeyUp(keyCode, event)
+        else if (event.isCtrlPressed && keyCode != KeyEvent.KEYCODE_SPACE)
+            super.onKeyUp(keyCode, event)
+        else {
+            val handled = composeRoot?.controller?.dispatcher
+                ?.processHardwareKeyUp(event) ?: false
+            handled || super.onKeyUp(keyCode, event)
+        }
     }
 
     override fun setInputView(view: View) {
@@ -158,20 +213,26 @@ class ImeService : InputMethodService() {
         // 交回系统之前先摘掉旧父容器，让这次 addView 一定能成功。
         (view.parent as? ViewGroup)?.removeView(view)
         super.setInputView(view)
-        val layoutParams = view.layoutParams
-        if (layoutParams != null && layoutParams.height != ViewGroup.LayoutParams.MATCH_PARENT) {
-            layoutParams.height = ViewGroup.LayoutParams.MATCH_PARENT
-            view.setLayoutParams(layoutParams)
+        val layoutParams = view.layoutParams ?: return
+        // Compose 根没有可测量的子 View，必须显式给高度；否则 MATCH_PARENT 会撑满整个 IME 窗口，
+        // 并让 onComputeInsets 报出覆盖全屏的键盘区域。
+        val targetHeight = if (view is ImeComposeRoot) {
+            view.preferredKeyboardHeight().takeIf { it > 0 } ?: ViewGroup.LayoutParams.MATCH_PARENT
+        } else {
+            ViewGroup.LayoutParams.MATCH_PARENT
+        }
+        if (layoutParams.height != targetHeight) {
+            layoutParams.height = targetHeight
+            view.layoutParams = layoutParams
         }
     }
 
     override fun onEvaluateFullscreenMode(): Boolean = false //修复横屏之后输入框遮挡问题
 
-
     override fun onComputeInsets(outInsets: Insets) {
-        val (x, y, width, height) = if (::mInputView.isInitialized) mInputView.getKeyboardRect() else intArrayOf(0, 0, 0,0)
+        val (x, y, width, height) = currentKeyboardRect()
         outInsets.apply {
-            if(EnvironmentSingleton.instance.keyboardModeFloat) {
+            if (EnvironmentSingleton.instance.keyboardModeFloat) {
                 contentTopInsets = EnvironmentSingleton.instance.mScreenHeight
                 visibleTopInsets = EnvironmentSingleton.instance.mScreenHeight
                 touchableInsets = Insets.TOUCHABLE_INSETS_REGION
@@ -185,12 +246,30 @@ class ImeService : InputMethodService() {
         }
     }
 
-    override fun onUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int, candidatesStart: Int, candidatesEnd: Int) {
-       super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
-        if (::mInputView.isInitialized) mInputView.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesEnd)
+    /** 当前键盘区域：Compose 根自己就是键盘区，直接取它的窗口坐标 */
+    private fun currentKeyboardRect(): IntArray {
+        composeRoot?.takeIf { it.isAttachedToWindow }?.let { return it.getKeyboardRect() }
+        return intArrayOf(0, 0, 0, 0)
+    }
+
+    override fun onUpdateSelection(
+        oldSelStart: Int,
+        oldSelEnd: Int,
+        newSelStart: Int,
+        newSelEnd: Int,
+        candidatesStart: Int,
+        candidatesEnd: Int,
+    ) {
+        super.onUpdateSelection(
+            oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd
+        )
+        composeRoot?.controller?.dispatcher?.onUpdateSelection(
+            oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesEnd
+        )
     }
 
     private val cursorAnchorPosition = FloatArray(2)
+
     override fun onUpdateCursorAnchorInfo(cursorAnchorInfo: CursorAnchorInfo?) {
         super.onUpdateCursorAnchorInfo(cursorAnchorInfo)
         if (!isHardwareKeyboard || cursorAnchorInfo == null) return
@@ -200,18 +279,26 @@ class ImeService : InputMethodService() {
         if (matrix != null) {
             matrix.mapPoints(cursorAnchorPosition)
         }
-        if (::mInputView.isInitialized) mInputView.updatePosition(cursorAnchorPosition)
+        hardwareCandidateView?.updatePosition(cursorAnchorPosition)
     }
 
     override fun onWindowShown() {
-        // 物理键盘模式下只创建候选视图，此时 mInputView 可能还没赋值，直接调用会 UninitializedPropertyAccessException
-        if (::mInputView.isInitialized) mInputView.onWindowShown()
+        // 每次显示都按当前设置重算输入区尺寸并刷新组合，设置页改动后回到键盘立即生效
+        composeRoot?.let { root ->
+            EnvironmentSingleton.instance.initData(baseContext)
+            root.controller.bumpKeyboardRevision()
+            root.imeLifecycleOwner.show()
+        }
         super.onWindowShown()
         hideSystemImeSwitchButton()
     }
 
     override fun onWindowHidden() {
-        if (::mInputView.isInitialized) mInputView.onWindowHidden()
+        composeRoot?.let { root ->
+            root.controller.dispatcher.resetToIdleState()
+            KeyboardManager.instance.switchKeyboard()
+            root.imeLifecycleOwner.hide()
+        }
         super.onWindowHidden()
     }
 
@@ -221,18 +308,26 @@ class ImeService : InputMethodService() {
     fun sendEnterKeyEvent() {
         val inputConnection = getCurrentInputConnection()
         YuyanEmojiCompat.mEditorInfo?.run {
-            if (inputType and InputType.TYPE_MASK_CLASS == InputType.TYPE_NULL || imeOptions.hasFlag(EditorInfo.IME_FLAG_NO_ENTER_ACTION)) {
+            if (inputType and InputType.TYPE_MASK_CLASS == InputType.TYPE_NULL ||
+                imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION != 0
+            ) {
                 sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER)
             } else if (!actionLabel.isNullOrEmpty() && actionId != EditorInfo.IME_ACTION_UNSPECIFIED) {
                 inputConnection.performEditorAction(actionId)
             } else when (val action = imeOptions and EditorInfo.IME_MASK_ACTION) {
-                EditorInfo.IME_ACTION_UNSPECIFIED, EditorInfo.IME_ACTION_NONE -> sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER)
+                EditorInfo.IME_ACTION_UNSPECIFIED, EditorInfo.IME_ACTION_NONE ->
+                    sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER)
                 else -> inputConnection.performEditorAction(action)
             }
         }
     }
 
-    fun sendCombinationKeyEvents(keyEventCode: Int, alt: Boolean = false, ctrl: Boolean = false, shift: Boolean = false) {
+    fun sendCombinationKeyEvents(
+        keyEventCode: Int,
+        alt: Boolean = false,
+        ctrl: Boolean = false,
+        shift: Boolean = false,
+    ) {
         var metaState = 0
         if (alt) metaState = KeyEvent.META_ALT_ON or KeyEvent.META_ALT_LEFT_ON
         if (ctrl) metaState = metaState or KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
@@ -250,60 +345,59 @@ class ImeService : InputMethodService() {
 
     fun sendDownKeyEvent(eventTime: Long, keyEventCode: Int, metaState: Int = 0) {
         currentInputConnection?.sendKeyEvent(
-            KeyEvent(eventTime, eventTime, KeyEvent.ACTION_DOWN, keyEventCode, 0, metaState,
-                KeyCharacterMap.VIRTUAL_KEYBOARD, keyEventCode, KeyEvent.FLAG_SOFT_KEYBOARD or KeyEvent.FLAG_KEEP_TOUCH_MODE)
+            KeyEvent(
+                eventTime, eventTime, KeyEvent.ACTION_DOWN, keyEventCode, 0, metaState,
+                KeyCharacterMap.VIRTUAL_KEYBOARD, keyEventCode,
+                KeyEvent.FLAG_SOFT_KEYBOARD or KeyEvent.FLAG_KEEP_TOUCH_MODE
+            )
         )
     }
 
     fun sendUpKeyEvent(eventTime: Long, keyEventCode: Int, metaState: Int = 0) {
         currentInputConnection.sendKeyEvent(
-            KeyEvent(eventTime, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, keyEventCode, 0, metaState,
-                KeyCharacterMap.VIRTUAL_KEYBOARD, keyEventCode, KeyEvent.FLAG_SOFT_KEYBOARD or KeyEvent.FLAG_KEEP_TOUCH_MODE)
+            KeyEvent(
+                eventTime, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, keyEventCode, 0, metaState,
+                KeyCharacterMap.VIRTUAL_KEYBOARD, keyEventCode,
+                KeyEvent.FLAG_SOFT_KEYBOARD or KeyEvent.FLAG_KEEP_TOUCH_MODE
+            )
         )
     }
 
-    /**
-     * 向输入框提交预选词
-     */
+    /** 向输入框提交预选词 */
     fun setComposingText(text: CharSequence) {
         currentInputConnection.setComposingText(text, 1)
     }
 
-
-    /**
-     * 结束提交预选词
-     */
+    /** 结束提交预选词 */
     fun finishComposingText() {
         currentInputConnection.finishComposingText()
     }
 
-    /**
-     * 发送字符串给编辑框
-     */
+    /** 发送字符串给编辑框 */
     fun commitText(text: String) {
         currentInputConnection.commitText(StringUtils.converted2FlowerTypeface(text), 1)
     }
 
-    /**
-     * 发送字符串给编辑框
-     */
+    /** 发送字符串给编辑框 */
     fun commitText(text: String, newCursorPosition: Int) {
-        currentInputConnection.commitText(StringUtils.converted2FlowerTypeface(text), newCursorPosition)
+        currentInputConnection.commitText(
+            StringUtils.converted2FlowerTypeface(text), newCursorPosition
+        )
     }
 
-    fun getTextBeforeCursor(length:Int) : String {
+    fun getTextBeforeCursor(length: Int): String {
         return currentInputConnection.getTextBeforeCursor(length, 0).toString()
     }
 
-    fun commitTextEditMenu(id:Int) {
+    fun commitTextEditMenu(id: Int) {
         currentInputConnection.performContextMenuAction(id)
     }
 
-    fun performEditorAction(editorAction:Int) {
+    fun performEditorAction(editorAction: Int) {
         currentInputConnection.performEditorAction(editorAction)
     }
 
-    fun deleteSurroundingText(length:Int) {
+    fun deleteSurroundingText(length: Int) {
         currentInputConnection.deleteSurroundingText(length, 0)
     }
 
@@ -313,8 +407,8 @@ class ImeService : InputMethodService() {
 
     fun handleHardwareKeyboard(newConfig: Configuration? = null): Boolean {
         val hardwareKeyboard = if (showVirtualKeyboardOnPhysicalKeyboard) false
-            else if (newConfig != null) (newConfig.keyboard != Configuration.KEYBOARD_NOKEYS)
-            else resources.configuration.keyboard != Configuration.KEYBOARD_NOKEYS
+        else if (newConfig != null) (newConfig.keyboard != Configuration.KEYBOARD_NOKEYS)
+        else resources.configuration.keyboard != Configuration.KEYBOARD_NOKEYS
         isHardwareKeyboard = hardwareKeyboard
         return hardwareKeyboard
     }
@@ -360,5 +454,4 @@ class ImeService : InputMethodService() {
         // 系统在输入法窗口里自绘的导航栏容器类名（android.inputmethodservice.navigationbar.NavigationBarFrame）
         private const val NAVIGATION_BAR_FRAME_CLASS_NAME = "NavigationBarFrame"
     }
-
 }

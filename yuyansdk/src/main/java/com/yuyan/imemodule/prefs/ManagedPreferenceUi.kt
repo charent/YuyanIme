@@ -1,38 +1,30 @@
-
 package com.yuyan.imemodule.prefs
 
-import android.content.Context
 import androidx.annotation.StringRes
-import androidx.preference.EditTextPreference
-import androidx.preference.ListPreference
-import androidx.preference.Preference
-import androidx.preference.PreferenceCategory
-import com.yuyan.imemodule.view.preference.DialogSeekBarPreference
-import com.yuyan.imemodule.view.preference.EditTextIntPreference
-import com.yuyan.imemodule.view.preference.ImeSwitchPreference
-import com.yuyan.imemodule.view.preference.ManagedPreference
-import com.yuyan.imemodule.view.preference.TwinSeekBarPreference
+import com.yuyan.imemodule.prefs.ManagedPreference.StringLikeCodec
 
-abstract class ManagedPreferenceUi<T : Preference>(
+/**
+ * 偏好项的 **UI 元数据**（方案 §2.4）。
+ *
+ * Phase 4 起这里不再持有任何 `androidx.preference` 类型，也不再负责创建 View：
+ * 它只是「怎么描述这一行」的纯数据，由 `SettingsRenderer` 翻译成 Compose 控件。
+ * 数据侧（取值/写值/变更通知）仍是 [ManagedPreference]，两层完全解耦。
+ */
+abstract class ManagedPreferenceUi(
     val key: String,
     private val enableUiOn: (() -> Boolean)? = null
 ) {
 
-    abstract fun createUi(context: Context): T
-
     fun isEnabled() = enableUiOn?.invoke() ?: true
 
+    /** 分组标题 */
     class Category(
         @StringRes
         val title: Int,
         enableUiOn: (() -> Boolean)? = null
-    ) : ManagedPreferenceUi<PreferenceCategory>("", enableUiOn) {
-        override fun createUi(context: Context) = PreferenceCategory(context).apply {
-            isIconSpaceReserved = false
-            setTitle(this@Category.title)
-        }
-    }
+    ) : ManagedPreferenceUi("", enableUiOn)
 
+    /** 开关 */
     class Switch(
         @StringRes
         val title: Int,
@@ -41,42 +33,27 @@ abstract class ManagedPreferenceUi<T : Preference>(
         @StringRes
         val summary: Int? = null,
         enableUiOn: (() -> Boolean)? = null
-    ) : ManagedPreferenceUi<ImeSwitchPreference>(key, enableUiOn) {
-        override fun createUi(context: Context) = ImeSwitchPreference(context).apply {
-            key = this@Switch.key
-            isIconSpaceReserved = false
-            isSingleLineTitle = false
-            setDefaultValue(defaultValue)
-            if (this@Switch.summary != null)
-                setSummary(this@Switch.summary)
-            setTitle(this@Switch.title)
-        }
-    }
+    ) : ManagedPreferenceUi(key, enableUiOn)
 
+    /** 单选（点击弹单选题框） */
     class StringList<T : Any>(
         @StringRes
         val title: Int,
         key: String,
         val defaultValue: T,
-        val codec: ManagedPreference.StringLikeCodec<T>,
+        val codec: StringLikeCodec<T>,
         val entryValues: List<T>,
         @StringRes
         val entryLabels: List<Int>,
         enableUiOn: (() -> Boolean)? = null
-    ) : ManagedPreferenceUi<ListPreference>(key, enableUiOn) {
-        override fun createUi(context: Context) = ListPreference(context).apply {
-            key = this@StringList.key
-            isIconSpaceReserved = false
-            isSingleLineTitle = false
-            entryValues = this@StringList.entryValues.map { codec.encode(it) }.toTypedArray()
-            summaryProvider = ListPreference.SimpleSummaryProvider.getInstance()
-            setDefaultValue(codec.encode(defaultValue))
-            setTitle(this@StringList.title)
-            entries = this@StringList.entryLabels.map { context.getString(it) }.toTypedArray()
-            setDialogTitle(this@StringList.title)
-        }
+    ) : ManagedPreferenceUi(key, enableUiOn) {
+
+        /** 已持久化的原始字符串对应第几项（找不到返回 -1） */
+        fun indexOfRaw(raw: String?): Int =
+            entryValues.indexOfFirst { codec.encode(it) == raw }
     }
 
+    /** 数字输入（范围超出 500 档时使用） */
     class EditTextInt(
         @StringRes
         val title: Int,
@@ -86,21 +63,9 @@ abstract class ManagedPreferenceUi<T : Preference>(
         val max: Int,
         val unit: String = "",
         enableUiOn: (() -> Boolean)? = null
-    ) : ManagedPreferenceUi<EditTextPreference>(key, enableUiOn) {
-        override fun createUi(context: Context) = EditTextIntPreference(context).apply {
-            key = this@EditTextInt.key
-            isIconSpaceReserved = false
-            isSingleLineTitle = false
-            summaryProvider = EditTextIntPreference.SimpleSummaryProvider
-            setDefaultValue(this@EditTextInt.defaultValue.toString())
-            setTitle(this@EditTextInt.title)
-            setDialogTitle(this@EditTextInt.title)
-            min = this@EditTextInt.min
-            max = this@EditTextInt.max
-            unit = this@EditTextInt.unit
-        }
-    }
+    ) : ManagedPreferenceUi(key, enableUiOn)
 
+    /** 单滑杆 */
     class SeekBarInt(
         @StringRes
         val title: Int,
@@ -113,23 +78,9 @@ abstract class ManagedPreferenceUi<T : Preference>(
         @StringRes
         val defaultLabel: Int? = null,
         enableUiOn: (() -> Boolean)? = null
-    ) : ManagedPreferenceUi<DialogSeekBarPreference>(key, enableUiOn) {
-        override fun createUi(context: Context) = DialogSeekBarPreference(context).apply {
-            key = this@SeekBarInt.key
-            isIconSpaceReserved = false
-            isSingleLineTitle = false
-            summaryProvider = DialogSeekBarPreference.SimpleSummaryProvider
-            this@SeekBarInt.defaultLabel?.let { defaultLabel = context.getString(it) }
-            setDefaultValue(this@SeekBarInt.defaultValue)
-            setTitle(this@SeekBarInt.title)
-            setDialogTitle(this@SeekBarInt.title)
-            min = this@SeekBarInt.min
-            max = this@SeekBarInt.max
-            unit = this@SeekBarInt.unit
-            step = this@SeekBarInt.step
-        }
-    }
+    ) : ManagedPreferenceUi(key, enableUiOn)
 
+    /** 双滑杆（键水平/垂直间距，唯一使用点 [com.yuyan.imemodule.data.theme.ThemePrefs]） */
     class TwinSeekBarInt(
         @StringRes
         val title: Int,
@@ -148,23 +99,5 @@ abstract class ManagedPreferenceUi<T : Preference>(
         @StringRes
         val defaultLabel: Int? = null,
         enableUiOn: (() -> Boolean)? = null
-    ) : ManagedPreferenceUi<TwinSeekBarPreference>(key, enableUiOn) {
-        override fun createUi(context: Context) = TwinSeekBarPreference(context).apply {
-            setTitle(this@TwinSeekBarInt.title)
-            setDialogTitle(this@TwinSeekBarInt.title)
-            label = context.getString(this@TwinSeekBarInt.label)
-            key = this@TwinSeekBarInt.key
-            secondaryLabel = context.getString(this@TwinSeekBarInt.secondaryLabel)
-            secondaryKey = this@TwinSeekBarInt.secondaryKey
-            this@TwinSeekBarInt.defaultLabel?.let { defaultLabel = context.getString(it) }
-            setDefaultValue(this@TwinSeekBarInt.defaultValue to this@TwinSeekBarInt.secondaryDefaultValue)
-            min = this@TwinSeekBarInt.min
-            max = this@TwinSeekBarInt.max
-            unit = this@TwinSeekBarInt.unit
-            step = this@TwinSeekBarInt.step
-            isIconSpaceReserved = false
-            isSingleLineTitle = false
-            summaryProvider = TwinSeekBarPreference.SimpleSummaryProvider
-        }
-    }
+    ) : ManagedPreferenceUi(key, enableUiOn)
 }

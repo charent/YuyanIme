@@ -5,7 +5,6 @@ import android.content.SharedPreferences
 import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.core.content.edit
-import androidx.preference.PreferenceManager
 import com.yuyan.imemodule.R
 import com.yuyan.imemodule.application.Launcher
 import com.yuyan.imemodule.application.CustomConstant
@@ -18,6 +17,7 @@ import com.yuyan.imemodule.prefs.behavior.HalfWidthSymbolsMode
 import com.yuyan.imemodule.prefs.behavior.KeyboardOneHandedMod
 import com.yuyan.imemodule.prefs.behavior.PinyinCorrectionStrength
 import com.yuyan.imemodule.utils.DevicesUtils
+import com.yuyan.imemodule.utils.defaultSharedPreferences
 
 
 /** 剪贴板历史记录上限：最小 50 条，最大 1000 条，滑动步进 50 条（共 20 档） */
@@ -55,6 +55,8 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
         val vibrationAmplitude = int("key_press_sound_volume", 0)     //触感强度
 
         val privacyPolicySure = bool("privacy_policy_sure", false) //是否同意隐私政策
+
+
     }
 
     inner class Input : ManagedPreferenceCategory(R.string.setting_ime_input, sharedPreferences) {
@@ -381,7 +383,7 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
     @RequiresApi(Build.VERSION_CODES.N)
     fun syncToDeviceEncryptedStorage() {
         val ctx = Launcher.instance.context.createDeviceProtectedStorageContext()
-        val sp = PreferenceManager.getDefaultSharedPreferences(ctx)
+        val sp = ctx.defaultSharedPreferences()
         sp.edit {
             internal.managedPreferences.forEach {
                 it.value.putValueTo(this@edit)

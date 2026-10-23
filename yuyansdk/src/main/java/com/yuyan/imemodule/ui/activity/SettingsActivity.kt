@@ -1,102 +1,60 @@
 package com.yuyan.imemodule.ui.activity
 
 import android.os.Bundle
-import android.view.View
-import android.view.ViewGroup
+import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.viewModels
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.updateLayoutParams
-import androidx.navigation.NavController
-import androidx.navigation.fragment.NavHostFragment
-import androidx.navigation.ui.AppBarConfiguration
-import androidx.navigation.ui.setupWithNavController
-import com.yuyan.imemodule.R
-import com.yuyan.imemodule.databinding.ActivitySettingsBinding
+import androidx.activity.compose.setContent
+import com.yuyan.imemodule.compose.settings.SettingsDest
+import com.yuyan.imemodule.compose.settings.SettingsNavHost
+import com.yuyan.imemodule.compose.settings.SettingsTheme
 import com.yuyan.imemodule.prefs.AppPrefs
 import com.yuyan.imemodule.ui.setup.SetupActivity
 import com.yuyan.imemodule.utils.startActivity
-import splitties.dimensions.dp
-import splitties.views.topPadding
 
-open class SettingsActivity : AppCompatActivity() {
-
-    private val viewModel: SettingsViewModel by viewModels()
-    private lateinit var navController: NavController
+/**
+ * 设置宿主（Phase 4 起为 Compose）。
+ *
+ * - 导航：`navigation-compose`，路由见 [SettingsDest]；
+ * - 深链：键盘端通过 intent extra [SettingsDest.EXTRA_DEST] 指定首跳目的地；
+ * - 首次启动未同意隐私政策时以隐私页为起点，且不显示返回箭头。
+ *
+ * 设备加密存储的同步挂在这里的 `onStop`（等价旧 `ManagedPreferenceFragment.onStop`），
+ * 因为 Fragment 层已删除，同步时机改为整个设置会话结束时。
+ */
+open class SettingsActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val binding =ActivitySettingsBinding.inflate(layoutInflater)
-        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, windowInsets ->
-            val statusBars = windowInsets.getInsets(WindowInsetsCompat.Type.statusBars())
-            val navBars = windowInsets.getInsets(WindowInsetsCompat.Type.navigationBars())
-            binding.root.updateLayoutParams<ViewGroup.MarginLayoutParams> {
-                leftMargin = navBars.left
-                rightMargin = navBars.right
-            }
-            binding.toolbar.topPadding = statusBars.top
-            windowInsets
-        }
-        setContentView(binding.root)
-        setSupportActionBar(binding.toolbar)
 
-        val appBarConfiguration = AppBarConfiguration(
-            // 设置不显示返回箭头的界面
-            topLevelDestinationIds = setOf(R.id.privacyPolicyFragment)
-        )
-        val navHostFragment = supportFragmentManager.findFragmentById(R.id.nav_host_fragment) as NavHostFragment?
-        navController = navHostFragment!!.navController
+        val privacySure = AppPrefs.getInstance().internal.privacyPolicySure.getValue()
+        val deepLink = SettingsDest.fromRoute(intent?.getStringExtra(SettingsDest.EXTRA_DEST))
+        val startRoute = when {
+            !privacySure -> SettingsDest.Privacy.route
+            deepLink != null -> deepLink.route
+            else -> SettingsDest.Home.route
+        }
 
-        binding.toolbar.setupWithNavController(navController, appBarConfiguration)
-        binding.toolbar.setNavigationOnClickListener {
-            // prevent navigate up when child fragment has enabled `OnBackPressedCallback`
-            if (onBackPressedDispatcher.hasEnabledCallbacks()) {
-                onBackPressedDispatcher.onBackPressed()
-                return@setNavigationOnClickListener
-            }
-            // "minimize" the activity if we can't go back
-            navController.navigateUp() || onSupportNavigateUp() || moveTaskToBack(false)
-        }
-        viewModel.toolbarTitle.observe(this) {
-            binding.toolbar.title = it
-        }
-        viewModel.toolbarShadow.observe(this) {
-            binding.toolbar.elevation = dp(if (it) 4f else 0f)
-        }
-        navController.addOnDestinationChangedListener { _, dest, _ ->
-            when (dest.id) {
-                R.id.themeFragment -> viewModel.disableToolbarShadow()
-                else -> viewModel.enableToolbarShadow()
+        setContent {
+            SettingsTheme {
+                SettingsNavHost(
+                    startRoute = startRoute,
+                    onExit = { finish() },
+                )
             }
         }
-        if(!AppPrefs.getInstance().internal.privacyPolicySure.getValue()){
-            // Activity 重建时导航图已恢复到隐私政策页，再次 navigate 会因找不到 action 而崩溃
-            if (savedInstanceState == null) {
-                navController.navigate(R.id.action_settingsFragment_to_privacyPolicyFragment)
-            }
-            return
-        }
-        if (SetupActivity.shouldShowUp()) {
+
+        // 已同意隐私政策且引导未完成 → 进入引导页（旧实现同样在 onCreate 末尾触发）
+        if (privacySure && SetupActivity.shouldShowUp() && savedInstanceState == null) {
             startActivity<SetupActivity>()
         }
     }
 
-    fun onclick(view: View) {
-        when (view.id){
-            R.id.privacy_policy_sure -> {
-                navController.navigateUp()
-                AppPrefs.getInstance().internal.privacyPolicySure.setValue(true)
-                if (SetupActivity.shouldShowUp()) {
-                    startActivity<SetupActivity>()
-                }
-            }
-            R.id.privacy_policy_cancel ->{
-                navController.navigateUp()
-            }
+    override fun onStop() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            AppPrefs.getInstance().syncToDeviceEncryptedStorage()
         }
+        super.onStop()
     }
 }
 

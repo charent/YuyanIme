@@ -3,7 +3,7 @@ package com.yuyan.imemodule.data.theme
 
 import android.content.SharedPreferences
 import androidx.core.content.edit
-import com.yuyan.imemodule.view.preference.ManagedPreference
+import com.yuyan.imemodule.prefs.ManagedPreference
 
 class ManagedThemePreference(
     sharedPreferences: SharedPreferences,
