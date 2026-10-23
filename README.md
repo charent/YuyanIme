@@ -61,10 +61,9 @@
 > JDK: OpenJDK version "17.0.11" 2024-04-16
 
 ## 构建项目：
-### 1. 克隆此项目并拉取所有子模块。
+### 1. 克隆此项目。
 ```sh
 git clone git@github.com:gurecn/YuyanIme.git
-git submodule update --init --recursive
 ```
 ### 2. 导入Android Studio
 建议使用最新、稳定版本，本人使用`Android Studio Narwhal Feature Drop | 2025.1.2`版本，按照常规项目导入即可。

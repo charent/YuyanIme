@@ -4,17 +4,13 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 ## Project overview
 
-语燕输入法 (Yuyan IME) is an offline Android Chinese input method built on a precompiled Rime engine, written in Kotlin. The repository is a thin application shell (`app`) plus the full IME implementation distributed as an Android library (`yuyansdk`, a Git submodule from `gurecn/yuyansdk`).
+语燕输入法 (Yuyan IME) is an offline Android Chinese input method built on a precompiled Rime engine, written in Kotlin. The repository is a monorepo: a thin application shell (`app`) plus the full IME implementation as an Android library module (`yuyansdk`), merged from a fork of `gurecn/yuyansdk` (full history preserved via git subtree).
 
 There are no unit/instrumentation tests (`src/test`, `src/androidTest` do not exist). Verification is done by building and running on a device.
 
 ## Build and run
 
-The submodule must be initialized first, otherwise `:yuyansdk` is missing:
-
-```sh
-git submodule update --init --recursive
-```
+Plain clone — no submodules.
 
 Common commands:
 
@@ -33,8 +29,8 @@ Notes:
 - `versionCode`/`versionName` are derived from the current date (`yyyyMMddHH`, GMT+8) in `app/build.gradle:101`; they are not manually maintained.
 - `applicationId` suffixes are `.offline` (flavor), `.debug`/`.release` (build type), e.g. `com.yuyan.pinyin.offline.release`.
 - Release signing is read from `keystore/keystore.properties` (gitignored) or the env vars `RELEASE_STORE_FILE`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS`, `RELEASE_KEY_PASSWORD`. `debug` also uses the release signing config, so a debug build without a keystore is unsigned.
-- Build config compiles against Java 21 (`sourceCompatibility`/`jvmTarget = 21`), while the README and CI workflow still declare JDK 17. Use JDK 21 locally unless you also update the Gradle config.
-- `yuyansdk` packages native libs from `yuyansdk/libs/<abi>` only via `sourceSets.offline.jniLibs.srcDirs`, and builds `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`. The app module filters to `arm64-v8a` only.
+- Build config compiles against Java 21 (`sourceCompatibility`/`jvmTarget = 21`); CI uses JDK 21. Use JDK 21 locally.
+- `yuyansdk` packages native libs from `yuyansdk/libs/<abi>` only via `sourceSets.offline.jniLibs.srcDirs`, and builds `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`. The app module filters to `arm64-v8a` only. The Rime engine (`libyuyanime.so`) is rebuilt out-of-band via `scripts/build-engine.ps1` (NDK/CMake scripts under `yuyansdk/src/main/cpp/scripts/`), never via Gradle `externalNativeBuild`.
 - CI (`.github/workflows/build.yml`) runs `./gradlew assembleOffline` on `v*` tags and uploads the APKs.
 
 ## Architecture
