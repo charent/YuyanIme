@@ -15,7 +15,9 @@ android {
 
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
         ndk {
-            abiFilters 'arm64-v8a'
+            // x86_64 是给模拟器调试用的（真机走 arm64-v8a）；
+            // 两个 ABI 都会打包，release 包因此多约 2.7 MB
+            abiFilters 'arm64-v8a', 'x86_64'
         }
 
         javaCompileOptions {
