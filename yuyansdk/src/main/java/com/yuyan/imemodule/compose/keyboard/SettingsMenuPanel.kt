@@ -1,11 +1,10 @@
 package com.yuyan.imemodule.compose.keyboard
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,8 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -27,10 +25,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -40,26 +36,28 @@ import androidx.compose.ui.unit.sp
 import com.yuyan.imemodule.R
 import com.yuyan.imemodule.compose.ImeController
 import com.yuyan.imemodule.compose.ImeUiState
-import com.yuyan.imemodule.compose.LocalImeTheme
 import com.yuyan.imemodule.compose.SettingsPage
 import com.yuyan.imemodule.data.menuSkbFunsPreset
-import com.yuyan.imemodule.data.theme.ThemeManager
 import com.yuyan.imemodule.database.DataBaseKT
 import com.yuyan.imemodule.database.entry.SkbFun
 import com.yuyan.imemodule.entity.SkbFunItem
 import com.yuyan.imemodule.prefs.AppPrefs
 import com.yuyan.imemodule.prefs.behavior.DoublePinyinSchemaMode
 import com.yuyan.imemodule.prefs.behavior.SkbMenuMode
-import com.yuyan.imemodule.singleton.EnvironmentSingleton
 import com.yuyan.imemodule.utils.DevicesUtils
 import com.yuyan.inputmethod.HWEngine
 
 /**
  * SETTINGS 容器：功能菜单宫格 / 输入方式选择 / 菜单项定制。
  *
- * 旧实现用 `RecyclerView + ItemTouchHelper` 做拖拽排序，Compose 版改成
- * 「上移 / 下移」按钮 + 星标切换常驻——拖拽需要 `detectDragGesturesAfterLongPress`
- * 配合列表位移计算，在 IME 这种窄而矮的容器里手势冲突明显，按钮更可靠。
+ * 旧实现是 `RecyclerView + 宫格 + ItemTouchHelper 拖拽排序`，Compose 版把三个页面
+ * 统一成「卡片格子 / 卡片行」：
+ * - 功能宫格：每项是一张圆角卡片（图标 + 标签），带错峰入场与按压缩放；
+ * - 输入方式：同款卡片，图标更大、标题居中；
+ * - 定制页：行卡片 + 星标（常驻）/ 上移下移按钮。
+ *
+ * 排序仍然用「上移 / 下移」而不是拖拽：IME 窗口又矮又窄，
+ * 长按拖拽和候选栏横滑、键区长按抢手势，按钮更可靠（能力不减少）。
  */
 @Composable
 fun SettingsMenuPanel(uiState: ImeUiState, controller: ImeController) {
@@ -72,51 +70,28 @@ fun SettingsMenuPanel(uiState: ImeUiState, controller: ImeController) {
 
 @Composable
 private fun MenuGridPage(controller: ImeController) {
-    val theme = LocalImeTheme.current
-    val env = remember { EnvironmentSingleton.instance }
-    val density = LocalDensity.current
-    val textColor = Color(theme.keyTextColor)
-    var items by remember { mutableStateOf(loadMenuItems()) }
-
-    // 列数 = 键盘宽度能放下几个 100dp 的格子（旧 `skbWidth / dp(100)`）。
-    // 迁移时漏了 dp→px 换算，直接 `skbWidth / 100` 在像素域相除得出 10+ 列，
-    // 每格只剩 ~40dp，图标标签全被截成「xx…」。
-    val columnCount = remember(env.skbWidth, density) {
-        ((env.skbWidth / with(density) { 100.dp.toPx() }).toInt()).coerceAtLeast(2)
-    }
+    val items = remember { loadMenuItems() }
 
     LazyVerticalGrid(
-        columns = GridCells.Fixed(columnCount),
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 10.dp),
+        columns = GridCells.Fixed(4),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+        contentPadding = PaddingValues(vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        items(items) { item ->
-            Column(
-                modifier = Modifier
-                    .padding(horizontal = 6.dp, vertical = 12.dp)
-                    .clickable {
-                        DevicesUtils.tryPlayKeyDown()
-                        DevicesUtils.tryVibrate()
-                        controller.onMenuAction(item.skbMenuMode)
-                    },
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Image(
-                    painter = painterResource(item.funImgResource),
-                    contentDescription = item.funName,
-                    colorFilter = ColorFilter.tint(textColor),
-                    modifier = Modifier.size(38.dp),
-                )
-                Text(
-                    text = item.funName,
-                    color = textColor,
-                    style = TextStyle(fontSize = 12.sp),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
-            }
+        itemsIndexed(items) { _, item ->
+            val palette = LocalImePalette.current
+            ImeTile(
+                iconRes = item.funImgResource,
+                label = item.funName,
+                palette = palette,
+                modifier = Modifier.height(60.dp),
+                onClick = {
+                    DevicesUtils.tryPlayKeyDown()
+                    DevicesUtils.tryVibrate()
+                    controller.onMenuAction(item.skbMenuMode)
+                },
+            )
         }
     }
 }
@@ -129,8 +104,7 @@ private fun loadMenuItems(): List<SkbFunItem> = runCatching {
 
 @Composable
 private fun SelectInputModePage(controller: ImeController) {
-    val theme = LocalImeTheme.current
-    val textColor = Color(theme.keyTextColor)
+    val palette = LocalImePalette.current
     val appPrefs = AppPrefs.getInstance()
 
     val doublePYSchemaName = when (appPrefs.input.doublePYSchemaMode.getValue()) {
@@ -158,82 +132,91 @@ private fun SelectInputModePage(controller: ImeController) {
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp),
+        contentPadding = PaddingValues(vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        items(items) { (name, icon, mode) ->
-            Column(
-                modifier = Modifier
-                    .padding(8.dp)
-                    .clickable {
-                        DevicesUtils.tryPlayKeyDown()
-                        DevicesUtils.tryVibrate()
-                        controller.selectInputMode(mode)
-                    },
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Image(
-                    painter = painterResource(icon),
-                    contentDescription = name,
-                    colorFilter = ColorFilter.tint(textColor),
-                    modifier = Modifier.size(44.dp),
-                )
-                Text(
-                    text = name,
-                    color = textColor,
-                    style = TextStyle(fontSize = 12.sp, fontWeight = FontWeight.Medium),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
-            }
+        itemsIndexed(items) { _, (name, icon, mode) ->
+            ImeTile(
+                iconRes = icon,
+                label = name,
+                palette = palette,
+                modifier = Modifier.height(84.dp),
+                iconSize = 32.dp,
+                labelSize = 12,
+                onClick = {
+                    DevicesUtils.tryPlayKeyDown()
+                    DevicesUtils.tryVibrate()
+                    controller.selectInputMode(mode)
+                },
+            )
         }
     }
 }
 
 @Composable
 private fun CustomizePage(controller: ImeController) {
-    val theme = LocalImeTheme.current
-    val textColor = Color(theme.keyTextColor)
+    val palette = LocalImePalette.current
     var items by remember { mutableStateOf(loadMenuItems()) }
     var keepNames by remember { mutableStateOf(loadKeepNames()) }
 
-    LazyColumn(modifier = Modifier.fillMaxSize()) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp),
+        contentPadding = PaddingValues(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
         itemsIndexed(items) { index, item ->
+            val kept = keepNames.contains(item.skbMenuMode.name)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(40.dp)
-                    .padding(horizontal = 8.dp),
+                    .height(46.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(palette.card.copy(alpha = 0.9f))
+                    .padding(start = 14.dp, end = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     text = item.funName,
-                    color = textColor,
+                    color = palette.onSurface,
                     style = TextStyle(fontSize = 13.sp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                // 常驻候选栏开关
-                Text(
-                    text = if (keepNames.contains(item.skbMenuMode.name)) "★" else "☆",
-                    color = if (keepNames.contains(item.skbMenuMode.name)) Color(theme.accentKeyBackgroundColor) else textColor,
-                    style = TextStyle(fontSize = 18.sp),
-                    modifier = Modifier.padding(horizontal = 8.dp).clickable {
-                        val name = item.skbMenuMode.name
-                        keepNames = if (keepNames.contains(name)) {
-                            DataBaseKT.instance.skbFunDao().delete(SkbFun(name = name, isKeep = 1))
-                            keepNames - name
-                        } else {
-                            DataBaseKT.instance.skbFunDao().insert(SkbFun(name = name, isKeep = 1))
-                            keepNames + name
-                        }
-                    },
-                )
+                // 常驻候选栏（星标）
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .imeClickable() {
+                            val name = item.skbMenuMode.name
+                            keepNames = if (kept) {
+                                DataBaseKT.instance.skbFunDao().delete(SkbFun(name = name, isKeep = 1))
+                                keepNames - name
+                            } else {
+                                DataBaseKT.instance.skbFunDao().insert(SkbFun(name = name, isKeep = 1))
+                                keepNames + name
+                            }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = if (kept) "★" else "☆",
+                        color = if (kept) palette.accent else palette.muted,
+                        style = TextStyle(fontSize = 16.sp),
+                        textAlign = TextAlign.Center,
+                    )
+                }
                 // 上移 / 下移
-                Text(
-                    text = "↑",
-                    color = textColor,
-                    style = TextStyle(fontSize = 16.sp),
-                    modifier = Modifier.padding(horizontal = 8.dp).clickable {
+                ImeIconButton(
+                    iconRes = R.drawable.ic_menu_arrow_up,
+                    contentDescription = null,
+                    tint = if (index > 0) palette.onSurface else palette.muted.copy(alpha = 0.35f),
+                    size = 32.dp,
+                    iconSize = 16.dp,
+                    onClick = {
                         if (index > 0) {
                             items = items.toMutableList().also { list ->
                                 val tmp = list[index - 1]
@@ -244,11 +227,13 @@ private fun CustomizePage(controller: ImeController) {
                         }
                     },
                 )
-                Text(
-                    text = "↓",
-                    color = textColor,
-                    style = TextStyle(fontSize = 16.sp),
-                    modifier = Modifier.padding(horizontal = 8.dp).clickable {
+                ImeIconButton(
+                    iconRes = R.drawable.ic_menu_arrow_down,
+                    contentDescription = null,
+                    tint = if (index < items.lastIndex) palette.onSurface else palette.muted.copy(alpha = 0.35f),
+                    size = 32.dp,
+                    iconSize = 16.dp,
+                    onClick = {
                         if (index < items.size - 1) {
                             items = items.toMutableList().also { list ->
                                 val tmp = list[index + 1]
@@ -262,15 +247,26 @@ private fun CustomizePage(controller: ImeController) {
             }
         }
         item {
-            Box(
-                modifier = Modifier.fillMaxWidth().height(40.dp).clickable { controller.switchToInputKeyboard() },
-                contentAlignment = Alignment.Center,
+            // 完成：一颗强调色胶囊，和下面的卡片列表拉开层级
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 2.dp),
+                horizontalArrangement = Arrangement.Center,
             ) {
-                Text(
-                    text = controller.string(R.string.setting_ime_keyboard_height_sure),
-                    color = textColor,
-                    style = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Medium),
-                )
+                Box(
+                    modifier = Modifier
+                        .height(38.dp)
+                        .clip(RoundedCornerShape(19.dp))
+                        .background(palette.accent)
+                        .imeClickable() { controller.switchToInputKeyboard() }
+                        .padding(horizontal = 28.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = controller.string(R.string.setting_ime_keyboard_height_sure),
+                        color = palette.onAccent,
+                        style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Medium),
+                    )
+                }
             }
         }
     }

@@ -22,6 +22,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.input.pointer.pointerInput
@@ -58,10 +59,10 @@ fun T9PrefixColumn(
     onAddSymbol: () -> Unit,
 ) {
     val theme = LocalImeTheme.current
+    val palette = LocalImePalette.current
     val env = remember { EnvironmentSingleton.instance }
     val candidateState by DictDecoder.candidateState.collectAsStateWithLifecycle()
-    val textColor = Color(theme.keyTextColor)
-    val keyBackground = Color(theme.keyBackgroundColor)
+    val textColor = palette.onSurface
     val keyBorder = ThemeManager.prefs.keyBorder.getValue()
 
     val prefixes = remember(candidateState.prefixRevision) {
@@ -89,7 +90,10 @@ fun T9PrefixColumn(
         modifier = Modifier
             .fillMaxSize()
             .then(
-                if (keyBorder) Modifier.background(keyBackground, RoundedCornerShape(radius))
+                if (keyBorder) Modifier.background(
+                    palette.card.copy(alpha = 0.92f),
+                    RoundedCornerShape(radius.coerceAtLeast(12f)),
+                )
                 else Modifier
             )
             // 旧实现整条侧栏是一个吃掉触摸的 RecyclerView：空白处按下不应落到
@@ -130,14 +134,16 @@ fun T9PrefixColumn(
                 // 拉到列表末尾才看到，而不是固定在底部被滚动的符号盖住
                 item {
                     Box(
-                        modifier = Modifier.fillMaxWidth().clickable { onAddSymbol() },
+                        modifier = Modifier.fillMaxWidth(),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Image(
-                            painter = painterResource(R.drawable.ic_menu_setting),
+                        ImeIconButton(
+                            iconRes = R.drawable.ic_menu_setting,
                             contentDescription = null,
-                            colorFilter = ColorFilter.tint(textColor),
-                            modifier = Modifier.padding(vertical = 8.dp).size(22.dp),
+                            tint = palette.muted,
+                            size = 34.dp,
+                            iconSize = 20.dp,
+                            onClick = onAddSymbol,
                         )
                     }
                 }
@@ -156,14 +162,16 @@ private fun SideCell(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() },
+            .padding(horizontal = 3.dp, vertical = 1.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .imeClickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = text,
             color = textColor,
             style = TextStyle(fontSize = textSize, fontWeight = FontWeight.Medium),
-            modifier = Modifier.padding(vertical = 12.dp),
+            modifier = Modifier.padding(vertical = 11.dp),
         )
     }
 }

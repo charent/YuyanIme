@@ -114,6 +114,8 @@ dependencies {
     implementation 'androidx.compose.ui:ui-text'
     implementation 'androidx.compose.foundation:foundation'
     implementation 'androidx.compose.material3:material3'
+    // 高层动画（animateColorAsState / AnimatedContent）：候选词选中态、面板切换过渡
+    implementation 'androidx.compose.animation:animation'
     // collectAsStateWithLifecycle
     implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.7'
     // Phase 4 才会用到 activity-compose / navigation-compose，按方案提前引入

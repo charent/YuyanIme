@@ -6,6 +6,11 @@ import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
 import android.view.KeyEvent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Spacer
@@ -13,15 +18,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextLayoutResult
@@ -32,6 +46,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yuyan.imemodule.R
 import com.yuyan.imemodule.compose.GestureTuning
@@ -47,6 +62,7 @@ import com.yuyan.imemodule.prefs.behavior.SkbStyleMode
 import com.yuyan.imemodule.service.DictDecoder
 import com.yuyan.imemodule.service.InputDispatcher
 import com.yuyan.imemodule.singleton.EnvironmentSingleton
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
@@ -87,7 +103,12 @@ fun KeyGrid(
     onRepeat: (key: SoftKey, dx: Float, dy: Float, longPressed: Boolean) -> Unit = { _, _, _, _ -> },
 ) {
     val theme = LocalImeTheme.current
+    val palette = LocalImePalette.current
     val env = remember { EnvironmentSingleton.instance }
+    val scope = rememberCoroutineScope()
+    // 按压进度、弹层入场进度都只在绘制阶段读取：按下一个键不触发重组
+    val pressAnim = remember(keyboard) { Animatable(0f) }
+    val popupAnim = remember(keyboard) { Animatable(0f) }
     // LEFT_SYMBOL 只是侧边栏的占位键（旧实现的「站位」键，由 T9PrefixColumn 覆盖绘制）。
     // 这里不把它当普通键帽：若照常绘制，会和侧边栏叠出两层键底色，把相邻按键啃出毛边。
     // 注意 controller 内部的 keys 必须用同一份过滤结果，否则 pressState 索引会错位。
@@ -126,6 +147,25 @@ fun KeyGrid(
     controller.onRepeat = onRepeat
     controller.handwriting = handwriting
     controller.addPhrases = addPhrases
+    // 动效由控制器回调驱动：手势层只管判定，进度动画留在组合层的 Animatable 里
+    controller.onPressChanged = { down ->
+        scope.launch {
+            pressAnim.animateTo(
+                targetValue = if (down) 1f else 0f,
+                animationSpec = if (down) PressDownSpec else PressUpSpec,
+            )
+        }
+    }
+    controller.onPopupChanged = { visible ->
+        scope.launch {
+            if (visible) {
+                popupAnim.snapTo(0f)
+                popupAnim.animateTo(1f, PopupInSpec)
+            } else {
+                popupAnim.snapTo(0f)
+            }
+        }
+    }
 
     Spacer(
         modifier = modifier
@@ -177,6 +217,7 @@ fun KeyGrid(
                 val scaleY = if (skbHeight > 0) size.height / skbHeight else 1f
                 val painter = KeyPainter(
                     theme = theme,
+                    palette = palette,
                     textMeasurer = textMeasurer,
                     scaleX = scaleX,
                     scaleY = scaleY,
@@ -188,10 +229,24 @@ fun KeyGrid(
                 val rendered = painter.buildKeys(keyboard, keys)
                 val strokeColor = Color(theme.keyTextColor)
 
+                // 动画值与按压状态必须在**绘制块外**读取，作为参数传进 onDrawBehind：
+                // drawWithCache 的缓存块在 key 不变时不会重跑，若在 onDrawBehind 里
+                // 直接读 State，快照追踪建立在不稳定的作用域上，动画帧不触发重绘，
+                // 表现为「按下直接全灰，看不到扩散」。显式在组合作用域读值，
+                // 值变化才会让 drawWithCache 重新执行绘制块。
+                val pressProgress = pressAnim.value
+                val pressedIndex = pressState.value
+                val pressOrigin = controller.pressPoint.value
+
                 onDrawBehind {
                     with(painter) {
                         rendered.forEachIndexed { index, r ->
-                            drawKey(r, pressState.value == index)
+                            drawKey(
+                                r = r,
+                                pressed = pressedIndex == index,
+                                progress = pressProgress,
+                                origin = pressOrigin,
+                            )
                         }
                     }
                     // 笔迹画在按键之上、弹层之下
@@ -199,13 +254,27 @@ fun KeyGrid(
                         drawHandwritingStrokes(session.allStrokes(), session::strokeWidthFor, strokeColor)
                     }
                     with(painter) {
-                        balloonState.value?.let { drawBalloon(it) }
-                        popupState.value?.let { drawPopup(it) }
+                        balloonState.value?.let { drawBalloon(it, pressProgress) }
+                        popupState.value?.let { drawPopup(it, popupAnim.value) }
                     }
                 }
             }
     )
 }
+
+// ---------------------------------------------------------------------------
+// 动效
+// ---------------------------------------------------------------------------
+
+/** 按下：用固定的时长曲线而非高刚度 spring，让涟漪扩散过程可被感知（约 110ms 盖满） */
+private val PressDownSpec = tween<Float>(durationMillis = 130, easing = FastOutSlowInEasing)
+private val PressUpSpec = tween<Float>(durationMillis = 90, easing = FastOutSlowInEasing)
+
+/** 长按弹层入场：略慢的收敛，让弹层有「浮出来」的重量感 */
+private val PopupInSpec = spring<Float>(dampingRatio = 0.70f, stiffness = Spring.StiffnessMediumLow)
+
+/** 键帽投影基准不透明度 */
+private const val KEY_SHADOW_ALPHA = 0.16f
 
 // ---------------------------------------------------------------------------
 // 可切换状态
@@ -234,6 +303,8 @@ internal data class KeyPopup(
     val keys: List<String>,
     val focus: Int,
     val rect: androidx.compose.ui.geometry.Rect,
+    /** 触发键的屏幕矩形：菜单气泡要按文字实测再定位，尺寸只能在绘制阶段算 */
+    val anchor: androidx.compose.ui.geometry.Rect,
     val cellWidth: Float,
     val cellHeight: Float,
     val isMenu: Boolean,
@@ -248,6 +319,7 @@ internal data class KeyPopup(
 /** 按键气泡（短按预览） */
 internal data class KeyBalloon(
     val text: String,
+    /** 触发键的屏幕矩形：气泡按文字实测宽度定位，可能比键更宽 */
     val rect: androidx.compose.ui.geometry.Rect,
 )
 
@@ -263,12 +335,27 @@ private class KeyTouchController(
     private val popupState: MutableState<KeyPopup?>,
     private val balloonState: MutableState<KeyBalloon?>,
 ) {
+    /** 按压点（视图坐标）：键帽的按下高亮从这一点向外扩散 */
+    val pressPoint: MutableState<Offset> = mutableStateOf(Offset.Zero)
+
     var onKeyTap: (SoftKey) -> Unit = {}
     var onKeyFeedback: (SoftKey) -> Unit = {}
     var onLongResult: (Pair<PopupMenuMode, String>) -> Unit = {}
     var onRepeat: (key: SoftKey, dx: Float, dy: Float, longPressed: Boolean) -> Unit = { _, _, _, _ -> }
+    /** 按压进度动效：true = 按下，false = 抬起 */
+    var onPressChanged: (Boolean) -> Unit = {}
+    /** 弹层显隐：驱动入场动画 */
+    var onPopupChanged: (Boolean) -> Unit = {}
     var handwriting: HandwritingSession? = null
     var addPhrases: Boolean = false
+
+    /** 弹层状态唯一入口：顺带通知组合层播放入场动画 */
+    private fun setPopup(value: KeyPopup?) {
+        val wasVisible = popupState.value != null
+        popupState.value = value
+        val visible = value != null
+        if (visible != wasVisible) onPopupChanged(visible)
+    }
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -347,10 +434,12 @@ private class KeyTouchController(
         if (key == null) {
             pressState.value = -1
             balloonState.value = null
-            popupState.value = null
+            setPopup(null)
             return false
         }
         pressState.value = keys.indexOfFirst { it === key }
+        pressPoint.value = position
+        onPressChanged(true)
         onKeyFeedback(key)
         showBalloon(key)
         handler.postDelayed(longPressRunnable, GestureTuning.longPressTimeoutMs)
@@ -370,7 +459,10 @@ private class KeyTouchController(
 
         // 弹层已弹出的情况：只做「选字」，不再判定其它手势
         popupState.value?.let { popup ->
-            popupState.value = updatePopupFocus(popup, position)
+            setPopup(updatePopupFocus(popup, position))
+            // 仍要累计位移：长按连发靠 deltaX/deltaY 决定「删除 / 恢复」
+            deltaX = dx
+            deltaY = dy
             lastX = position.x
             lastY = position.y
             return
@@ -439,12 +531,13 @@ private class KeyTouchController(
         handler.removeCallbacks(longPressRunnable)
         handler.removeCallbacks(repeatRunnable)
         balloonState.value = null
+        onPressChanged(false)
         val key = currentKey
         pressState.value = -1
         currentKey = null
 
         val popup = popupState.value
-        popupState.value = null
+        setPopup(null)
         if (popup != null) {
             // 菜单弹层：只有「上滑选中」才触发，与旧实现 isSelect 语义一致
             if (popup.isMenu) {
@@ -465,8 +558,9 @@ private class KeyTouchController(
         handler.removeCallbacks(longPressRunnable)
         handler.removeCallbacks(repeatRunnable)
         balloonState.value = null
-        popupState.value = null
+        setPopup(null)
         pressState.value = -1
+        onPressChanged(false)
         currentKey = null
     }
 
@@ -498,15 +592,9 @@ private class KeyTouchController(
     private fun showBalloon(key: SoftKey) {
         if (!GestureTuning.balloonEnabled) return
         if (TextUtils.isEmpty(key.getkeyLabel())) return
-        val r = keyRectInView(key)
         balloonState.value = KeyBalloon(
             text = key.getkeyLabel(),
-            rect = androidx.compose.ui.geometry.Rect(
-                r.left,
-                r.top - r.height,
-                r.right,
-                r.top,
-            ),
+            rect = keyRectInView(key),
         )
     }
 
@@ -524,7 +612,9 @@ private class KeyTouchController(
      */
     private fun openPopupIfRequired(key: SoftKey) {
         longPressed = true
-        handler.removeCallbacks(repeatRunnable)
+        // 这里**不要**取消 repeatRunnable：长按退格既要弹出「上滑清空」提示，
+        // 又要继续连发删除。旧 BaseKeyboardView 的长按同样不 remove MSG_REPEAT，
+        // 否则退格长按只会弹提示、一个字都删不掉。
         val symbolEnabled = ThemeManager.prefs.keyboardSymbol.getValue()
         val label = key.keyLabel.ifEmpty { "" }
         if (label.isNotBlank() && key.code != InputModeSwitcher.USER_KEYCODE_COMMA_EMOJI) {
@@ -533,12 +623,12 @@ private class KeyTouchController(
             val smallLabel = if (designPreset.any { it == keyLabel } || !symbolEnabled) "" else key.getmKeyLabelSmall()
             val candidates = buildTextPopupKeys(keyLabel, smallLabel)
             if (candidates.isEmpty()) {
-                popupState.value = null
+                setPopup(null)
                 balloonState.value = null
                 return
             }
             balloonState.value = null
-            popupState.value = buildPopup(key, candidates, isMenu = false, selected = true, menuPair = null)
+            setPopup(buildPopup(key, candidates, isMenu = false, selected = true, menuPair = null))
             return
         }
         if (key.code == InputModeSwitcher.USER_KEYCODE_LANG ||
@@ -559,12 +649,14 @@ private class KeyTouchController(
     private fun openMenuPopup(key: SoftKey, selected: Boolean) {
         val pair = menuPairOf(key) ?: return
         balloonState.value = null
-        popupState.value = buildPopup(
-            key = key,
-            keys = listOf(pair.second),
-            isMenu = true,
-            selected = selected,
-            menuPair = pair,
+        setPopup(
+            buildPopup(
+                key = key,
+                keys = listOf(pair.second),
+                isMenu = true,
+                selected = selected,
+                menuPair = pair,
+            )
         )
     }
 
@@ -575,7 +667,9 @@ private class KeyTouchController(
             PopupMenuMode.EnglishCell,
             if (AppPrefs.getInstance().input.abcSearchEnglishCell.getValue()) "直输模式" else "拼写模式"
         )
-        KeyEvent.KEYCODE_DEL -> Pair(PopupMenuMode.Clear, "🔙 上滑清空")
+        // 纯文字提示：emoji 在 drawText 的字体回退里经常取不到字形，
+        // 会留一段空白，提示语直接写字更稳
+        KeyEvent.KEYCODE_DEL -> Pair(PopupMenuMode.Clear, "上滑清空")
         InputModeSwitcher.USER_KEYCODE_CURSOR_DIRECTION -> Pair(PopupMenuMode.Move, "")
         KeyEvent.KEYCODE_ENTER -> Pair(PopupMenuMode.Enter, "↩️ 换行")
         else -> null
@@ -612,12 +706,15 @@ private class KeyTouchController(
         val totalWidth = cellWidth * columns
         var left = anchor.center.x - totalWidth / 2f
         left = left.coerceIn(0f, max(0f, viewWidth - totalWidth))
-        val bottom = anchor.top
-        val top = bottom - cellHeight * rows
+        // 优先放在按键上方；顶行按键上方没有空间会整块画到键盘外（等于看不见），
+        // 这种情况翻到按键下方，并让 rect 与绘制保持一致
+        val aboveTop = anchor.top - cellHeight * rows
+        val top = if (aboveTop < 0f) anchor.bottom else aboveTop
         return KeyPopup(
             keys = keys,
             focus = if (isMenu) 0 else 0,
-            rect = androidx.compose.ui.geometry.Rect(left, top, left + totalWidth, bottom),
+            rect = androidx.compose.ui.geometry.Rect(left, top, left + totalWidth, top + cellHeight * rows),
+            anchor = anchor,
             cellWidth = cellWidth,
             cellHeight = cellHeight,
             isMenu = isMenu,
@@ -637,8 +734,12 @@ private class KeyTouchController(
      */
     private fun updatePopupFocus(popup: KeyPopup, position: Offset): KeyPopup {
         if (popup.keys.size == 1) {
-            val moved = abs(position.y - downY) > 5f
-            return if (popup.isMenu) popup.copy(selected = popup.selected || moved) else popup
+            // 单格菜单（上滑清空 / 换行…）：与旧 PopupKeyboardMenuUi.onGestureEvent 一致，
+            // 只认「上滑」且要有实质位移。用 |Δy| > 5px 会把长按退格时的手指抖动
+            // 判成「上滑清空」，一松手就把已输入内容全清掉。
+            val slideUp = downY - position.y
+            val threshold = popup.anchor.height * MENU_SELECT_SLIDE_RATIO
+            return if (popup.selected || slideUp > threshold) popup.copy(selected = true) else popup
         }
         val col = ((position.x - popup.rect.left) / popup.cellWidth).toInt()
             .coerceIn(0, popup.columns - 1)
@@ -646,6 +747,11 @@ private class KeyTouchController(
             .coerceIn(0, popup.rows - 1)
         val index = (row * popup.columns + col).coerceIn(0, popup.keys.lastIndex)
         return popup.copy(focus = index, selected = true)
+    }
+
+    private companion object {
+        /** 菜单项被判为「选中（松手即执行）」所需的上滑距离，相对按键高度 */
+        const val MENU_SELECT_SLIDE_RATIO = 0.5f
     }
 }
 
@@ -668,6 +774,10 @@ private class RenderedKey(
     val right: Float,
     val bottom: Float,
     val corners: CornerRadius,
+    /** 键帽底色；null = 扁平风格下不画底（只有按下时浮出高亮） */
+    val fill: Color?,
+    /** 按下时从触点扩散的涟漪色（与底色保证有可见差异） */
+    val ripple: Color,
     val label: TextLayoutResult?,
     val labelOffset: Offset,
     val icon: ImageBitmap?,
@@ -685,6 +795,7 @@ private class RenderedKey(
 
 private class KeyPainter(
     private val theme: com.yuyan.imemodule.data.theme.Theme,
+    private val palette: ImePalette,
     private val textMeasurer: androidx.compose.ui.text.TextMeasurer,
     private val scaleX: Float,
     private val scaleY: Float,
@@ -693,12 +804,16 @@ private class KeyPainter(
     private val density: Float,
     private val fontScale: Float,
 ) {
-    private val textColor = Color(theme.keyTextColor)
-    private val keyColor = Color(theme.keyBackgroundColor)
-    private val pressedColor = Color(theme.keyPressHighlightColor)
-    private val functionColor = Color(theme.functionKeyBackgroundColor)
-    private val accentColor = Color(theme.accentKeyBackgroundColor)
-    private val popupColor = Color(theme.popupBackgroundColor)
+    private val textColor = palette.onSurface
+    private val keyColor = palette.key
+    private val pressedColor = palette.keyPressed
+    private val functionColor = palette.functionKey
+    private val accentColor = palette.accent
+    private val accentTextColor = palette.onAccent
+    private val popupColor = palette.card
+
+    /** 功能键与字母键的层级差：功能键文字略淡，避免「中/EN」抢视线 */
+    private val functionTextColor = palette.onSurface.copy(alpha = 0.88f)
 
     private val keyBorder = ThemeManager.prefs.keyBorder.getValue()
     private val keyRadius = ThemeManager.prefs.keyRadius.getValue().toFloat()
@@ -783,7 +898,33 @@ private class KeyPainter(
                 else -> key.keyIcon
             }
 
-            val textStyle = if (isStandaloneLabel(displayLabel)) functionTextStyle else keyTextStyle
+            // 键帽层级决定文字/图标色：回车（强调色底）用 onAccent，功能键略淡，
+            // 字母键用主文字色。旧实现所有键共用一个文字色，蓝底回车上的深色箭头
+            // 对比不足，也和「强调键」的语义不符。
+            val isAccentKey = key.code == KeyEvent.KEYCODE_ENTER
+            val isFunctionKey = key.code == InputModeSwitcher.USER_KEYCODE_SYMBOL ||
+                    key.code == InputModeSwitcher.USER_KEYCODE_NUMBER ||
+                    key.code == InputModeSwitcher.USER_KEYCODE_LANG
+            val keyTint = when {
+                isAccentKey -> accentTextColor
+                isFunctionKey -> functionTextColor
+                else -> textColor
+            }
+            val fill = when {
+                isAccentKey -> accentColor
+                !keyBorder -> null
+                isFunctionKey -> functionColor
+                else -> keyColor
+            }
+            // 涟漪色就是「按下高亮」，但必须与键帽底色拉开差距：
+            // 部分主题的按下色与键帽色几乎同色，扩散过程会完全不可见
+            val ripple = when {
+                fill == null -> pressedColor.copy(alpha = 0.55f)
+                channelDistance(pressedColor, fill) < 0.05f -> lerp(fill, palette.onSurface, 0.14f)
+                else -> pressedColor
+            }
+            val textStyle =
+                (if (isStandaloneLabel(displayLabel)) functionTextStyle else keyTextStyle).copy(color = keyTint)
 
             // 垂直布局沿用旧 TextKeyboard 的固定比例：所有按键共用同一条字母基线；
             // 上方小标点按「字母帽顶 - 间距 - 符号帽高」定位，放不下时整体下压字母。
@@ -807,7 +948,7 @@ private class KeyPainter(
             val letterBaseline = letterCenterY + letterCap / 2f
 
             if (drawable != null) {
-                runCatching { drawable.setTint(theme.keyTextColor) }
+                runCatching { drawable.setTint(keyTint.toArgb()) }
                 val sizePx = min(width, height) * ICON_SIZE_RATIO
                 icon = drawable.toImageBitmap(sizePx)
                 icon?.let {
@@ -833,7 +974,7 @@ private class KeyPainter(
 
             if (rawSmall.isNotEmpty()) {
                 smallLabel = textMeasurer.measure(
-                    rawSmall, smallTextStyle, overflow = TextOverflow.Clip, maxLines = 1, constraints = constraints
+                    rawSmall, smallTextStyle.copy(color = keyTint), overflow = TextOverflow.Clip, maxLines = 1, constraints = constraints
                 )
                 smallOffset = if (stackedSymbol) {
                     val box = runCatching { smallLabel.getBoundingBox(0) }.getOrNull()
@@ -853,7 +994,7 @@ private class KeyPainter(
 
             if (rawMnemonic.isNotEmpty()) {
                 mnemonic = textMeasurer.measure(
-                    rawMnemonic, mnemonicTextStyle, overflow = TextOverflow.Clip, maxLines = 1, constraints = constraints
+                    rawMnemonic, mnemonicTextStyle.copy(color = keyTint), overflow = TextOverflow.Clip, maxLines = 1, constraints = constraints
                 )
                 mnemonicOffset = Offset(
                     (left + right) / 2f - mnemonic.size.width / 2f,
@@ -865,9 +1006,14 @@ private class KeyPainter(
                 val mainText = if (InputModeSwitcher.isEnglish) "EN" else "中"
                 val subText = if (InputModeSwitcher.isEnglish) "/中" else "/EN"
                 langMain = textMeasurer.measure(
-                    mainText, functionTextStyle.copy(fontWeight = FontWeight.Bold), maxLines = 1, constraints = constraints
+                    mainText,
+                    functionTextStyle.copy(fontWeight = FontWeight.Bold, color = keyTint),
+                    maxLines = 1,
+                    constraints = constraints,
                 )
-                langSub = textMeasurer.measure(subText, smallTextStyle, maxLines = 1, constraints = constraints)
+                langSub = textMeasurer.measure(
+                    subText, smallTextStyle.copy(color = keyTint), maxLines = 1, constraints = constraints
+                )
                 val total = langMain.size.width + langSub.size.width
                 val startX = (left + right) / 2f - total / 2f
                 langMainOffset = Offset(startX, (top + bottom) / 2f - langMain.size.height / 2f)
@@ -883,7 +1029,9 @@ private class KeyPainter(
                 top = top,
                 right = right,
                 bottom = bottom,
-                corners = CornerRadius(keyRadius * scaleX),
+                corners = CornerRadius(modernKeyRadius(keyRadius * scaleX, width, height)),
+                fill = fill,
+                ripple = ripple,
                 label = label,
                 labelOffset = labelOffset,
                 icon = icon,
@@ -901,51 +1049,92 @@ private class KeyPainter(
         }
     }
 
-    fun DrawScope.drawKey(r: RenderedKey, pressed: Boolean) {
-        // 键帽底部投影：先铺两层下移的深色圆角矩形，键帽盖在上面，只在下方露出阴影
-        if (keyBorder && !theme.isDark) {
-            val dy = max(1f, scaleY)
+    /**
+     * 画一个键帽。
+     *
+     * [progress] 是按下进度（0 = 抬起，1 = 完全按下），由组合层的 spring 驱动；
+     * [origin] 是按下时手指落点。按下反馈是一个从落点向外扩散的圆（涟漪），
+     * 圆被键帽圆角矩形裁剪，扩散到盖满整个键帽即收敛为「按下高亮」态。
+     *
+     * 故意**不做整键缩放**：键帽缩小会让整块键盘的视觉重心一起下沉，
+     * 快速连续打字时特别明显（用户反馈「定位晕眩」）；涟漪是局部反馈，
+     * 不牵动周边，也和工具栏图标的 ripple 语言一致。
+     */
+    fun DrawScope.drawKey(r: RenderedKey, pressed: Boolean, progress: Float, origin: Offset) {
+        val p = if (pressed) progress.coerceIn(0f, 1f) else 0f
+        val width = r.right - r.left
+        val height = r.bottom - r.top
+
+        if (r.oval) {
+            // 扁平风格的回车：一枚胶囊
+            val inset = min(width, height) * 0.12f
             drawRoundRect(
-                color = Color(KEY_SHADOW_FAR_COLOR),
-                topLeft = Offset(r.left, r.top + dy * 2),
-                size = Size(r.right - r.left, r.bottom - r.top),
+                color = accentColor,
+                topLeft = Offset(r.left + inset, r.top + inset),
+                size = Size(width - inset * 2, height - inset * 2),
+                cornerRadius = CornerRadius((height - inset * 2) / 2f),
+            )
+        } else if (r.fill != null) {
+            if (!palette.isDark) {
+                // 两层下移的深色圆角矩形当投影，键帽盖在上面，只在下方露出
+                drawRoundRect(
+                    color = palette.shadow.copy(alpha = KEY_SHADOW_ALPHA * 0.45f),
+                    topLeft = Offset(r.left, r.top + 4.dp.toPx()),
+                    size = Size(width, height),
+                    cornerRadius = r.corners,
+                )
+                drawRoundRect(
+                    color = palette.shadow.copy(alpha = KEY_SHADOW_ALPHA),
+                    topLeft = Offset(r.left, r.top + 2.dp.toPx()),
+                    size = Size(width, height),
+                    cornerRadius = r.corners,
+                )
+            }
+            drawRoundRect(
+                color = r.fill,
+                topLeft = Offset(r.left, r.top),
+                size = Size(width, height),
                 cornerRadius = r.corners,
             )
-            drawRoundRect(
-                color = Color(KEY_SHADOW_NEAR_COLOR),
-                topLeft = Offset(r.left, r.top + dy),
-                size = Size(r.right - r.left, r.bottom - r.top),
-                cornerRadius = r.corners,
-            )
+            if (palette.isDark) {
+                // 深色主题里投影不可见，用一圈极淡的描边表达「键帽浮在底色上」
+                drawRoundRect(
+                    color = palette.outline,
+                    topLeft = Offset(r.left, r.top),
+                    size = Size(width, height),
+                    cornerRadius = r.corners,
+                    style = Stroke(width = 1f),
+                )
+            }
         }
 
-        when {
-            pressed -> drawRoundRect(
-                color = pressedColor,
-                topLeft = Offset(r.left, r.top),
-                size = Size(r.right - r.left, r.bottom - r.top),
-                cornerRadius = r.corners,
-            )
-            keyBorder -> drawRoundRect(
-                color = when (r.key.code) {
-                    KeyEvent.KEYCODE_ENTER -> accentColor
-                    InputModeSwitcher.USER_KEYCODE_SYMBOL,
-                    InputModeSwitcher.USER_KEYCODE_NUMBER,
-                    InputModeSwitcher.USER_KEYCODE_LANG -> functionColor
-                    else -> keyColor
-                },
-                topLeft = Offset(r.left, r.top),
-                size = Size(r.right - r.left, r.bottom - r.top),
-                cornerRadius = r.corners,
-            )
-            r.oval -> {
-                // 无边框风格：回车键画一个胶囊
-                val inset = min(r.right - r.left, r.bottom - r.top) * 0.12f
-                drawRoundRect(
-                    color = accentColor,
-                    topLeft = Offset(r.left + inset, r.top + inset),
-                    size = Size(r.right - r.left - inset * 2, r.bottom - r.top - inset * 2),
-                    cornerRadius = CornerRadius((r.bottom - r.top) / 2f),
+        // 按下涟漪：从落点扩散的实心圆，裁剪在键帽形状内
+        if (p > 0.005f) {            val path = Path().apply {
+                addRoundRect(
+                    RoundRect(
+                        rect = Rect(r.left, r.top, r.right, r.bottom),
+                        topLeft = r.corners,
+                        topRight = r.corners,
+                        bottomRight = r.corners,
+                        bottomLeft = r.corners,
+                    )
+                )
+            }
+            clipPath(path) {
+                // 落点被裁剪边界钳住（拖出键帽后松手、popup 期间落下等边缘情况）
+                val center = Offset(
+                    origin.x.coerceIn(r.left, r.right),
+                    origin.y.coerceIn(r.top, r.bottom),
+                )
+                val farCorner = max(
+                    max((center - Offset(r.left, r.top)).getDistance(), (center - Offset(r.right, r.top)).getDistance()),
+                    max((center - Offset(r.left, r.bottom)).getDistance(), (center - Offset(r.right, r.bottom)).getDistance()),
+                )
+                // 1.6 倍速率：约 60% 进度就盖满键帽，剩下的进度只是颜色的完全饱和
+                drawCircle(
+                    color = r.ripple,
+                    radius = farCorner * (p * 1.6f).coerceAtMost(1f),
+                    center = center,
                 )
             }
         }
@@ -960,28 +1149,77 @@ private class KeyPainter(
         r.langSub?.let { drawText(it, topLeft = r.langSubOffset) }
     }
 
-    fun DrawScope.drawBalloon(balloon: KeyBalloon) {
-        val radius = CornerRadius(keyRadius * scaleX)
-        drawRoundRect(
-            color = popupColor,
-            topLeft = Offset(balloon.rect.left, balloon.rect.top),
-            size = Size(balloon.rect.width, balloon.rect.height),
-            cornerRadius = radius,
-        )
+    /**
+     * 按键气泡：浮在触发键正上方的胶囊，宽度按文字实测放宽。
+     *
+     * 旧实现直接拿「键的上方等大矩形」铺色，宽度跟着键走——字母键窄，文字溢出，
+     * 看起来像透明底压在别的字母上；顶行键上方没有空间，气泡还会被画到画布外。
+     * 这里按内容定宽、按可用空间决定朝上还是朝下，并跟随 [appear] 缩放淡入。
+     */
+    fun DrawScope.drawBalloon(balloon: KeyBalloon, appear: Float) {
+        val a = appear.coerceIn(0f, 1f)
+        if (a <= 0.01f) return
         val layout = textMeasurer.measure(balloon.text, keyTextStyle, maxLines = 1)
-        drawText(
-            layout,
-            topLeft = Offset(
-                balloon.rect.center.x - layout.size.width / 2f,
-                balloon.rect.center.y - layout.size.height / 2f,
-            ),
-        )
+        val key = balloon.rect
+        val padH = 12.dp.toPx()
+        val gap = 5.dp.toPx()
+        val bubbleWidth = max(key.width, layout.size.width + padH * 2f).coerceAtMost(size.width)
+        val bubbleHeight = key.height * 0.92f
+        val left = (key.center.x - bubbleWidth / 2f).coerceIn(0f, max(0f, size.width - bubbleWidth))
+        var top = key.top - bubbleHeight - gap
+        // 顶行按键上方没空间：翻到按键下方，保证整个气泡都在画布内
+        if (top < 0f) top = (key.bottom + gap).coerceAtMost(max(0f, size.height - bubbleHeight))
+        val centerY = top + bubbleHeight / 2f
+        val radius = CornerRadius(bubbleHeight * 0.32f)
+
+        scale(0.88f + 0.12f * a, 0.88f + 0.12f * a, pivot = Offset(key.center.x, centerY)) {
+            if (!palette.isDark) {
+                drawRoundRect(
+                    color = palette.shadow.copy(alpha = 0.16f * a),
+                    topLeft = Offset(left, top + 3.dp.toPx()),
+                    size = Size(bubbleWidth, bubbleHeight),
+                    cornerRadius = radius,
+                )
+            }
+            drawRoundRect(
+                color = popupColor.copy(alpha = a),
+                topLeft = Offset(left, top),
+                size = Size(bubbleWidth, bubbleHeight),
+                cornerRadius = radius,
+            )
+            drawText(
+                layout,
+                topLeft = Offset(
+                    left + (bubbleWidth - layout.size.width) / 2f,
+                    centerY - layout.size.height / 2f,
+                ),
+                alpha = a,
+            )
+        }
     }
 
-    fun DrawScope.drawPopup(popup: KeyPopup) {
-        val radius = CornerRadius(keyRadius * scaleX)
+    fun DrawScope.drawPopup(popup: KeyPopup, appear: Float) {
+        val a = appear.coerceIn(0f, 1f)
+        if (a <= 0.01f) return
+        // 以弹层中心为锚点缩放淡入：长按后弹层「长出来」，而不是硬切一个色块
+        scale(0.92f + 0.08f * a, 0.92f + 0.08f * a, pivot = popup.rect.center) {
+            if (popup.isMenu) drawMenuBubble(popup, a) else drawPopupCells(popup, a)
+        }
+    }
+
+    /** 字符候选弹层：等宽格子，一格里一个候选字 */
+    private fun DrawScope.drawPopupCells(popup: KeyPopup, appear: Float) {
+        val radius = CornerRadius(min(popup.cellHeight, popup.cellWidth) * 0.22f)
+        if (!palette.isDark) {
+            drawRoundRect(
+                color = palette.shadow.copy(alpha = 0.18f * appear),
+                topLeft = Offset(popup.rect.left, popup.rect.top + 4.dp.toPx()),
+                size = Size(popup.rect.width, popup.rect.height),
+                cornerRadius = radius,
+            )
+        }
         drawRoundRect(
-            color = popupColor,
+            color = popupColor.copy(alpha = appear),
             topLeft = Offset(popup.rect.left, popup.rect.top),
             size = Size(popup.rect.width, popup.rect.height),
             cornerRadius = radius,
@@ -994,22 +1232,94 @@ private class KeyPainter(
             val focused = index == popup.focus && popup.selected
             if (focused) {
                 drawRoundRect(
-                    color = if (popup.clearMenu) Color(0xFFEF5350) else accentColor,
-                    topLeft = Offset(cellLeft, cellTop),
-                    size = Size(popup.cellWidth, popup.cellHeight),
-                    cornerRadius = radius,
+                    color = if (popup.clearMenu) DANGER_COLOR else accentColor,
+                    topLeft = Offset(cellLeft + 2.dp.toPx(), cellTop + 2.dp.toPx()),
+                    size = Size(popup.cellWidth - 4.dp.toPx(), popup.cellHeight - 4.dp.toPx()),
+                    cornerRadius = CornerRadius(popup.cellHeight * 0.2f),
                 )
             }
             if (text.isEmpty()) return@forEachIndexed
-            val layout = textMeasurer.measure(text, keyTextStyle, maxLines = 1)
+            val layout = textMeasurer.measure(
+                text,
+                keyTextStyle.copy(color = if (focused) accentTextColor else textColor),
+                maxLines = 1,
+            )
             drawText(
                 layout,
                 topLeft = Offset(
                     cellLeft + popup.cellWidth / 2f - layout.size.width / 2f,
                     cellTop + popup.cellHeight / 2f - layout.size.height / 2f,
                 ),
+                alpha = appear,
             )
         }
+    }
+
+    /**
+     * 功能键菜单提示（「上滑清空」「换行」等）：整块气泡 + 一行文字。
+     *
+     * 与字符弹层不同，菜单不是一个字一格，文字宽度由内容决定。所以这里按
+     * **实测文字宽高**定气泡尺寸，再夹到键盘范围内：
+     * - 只按按键尺寸定宽会让文字溢出气泡，看起来像「透明背景压在字母上」；
+     * - 靠边的按键（退格在右侧）不做水平夹紧就会顶出屏幕，末尾字被裁掉。
+     */
+    private fun DrawScope.drawMenuBubble(popup: KeyPopup, appear: Float) {
+        val text = popup.keys.firstOrNull().orEmpty()
+        if (text.isEmpty()) return
+        val highlighted = popup.selected
+        val (bubbleColor, bubbleTextColor) = when {
+            highlighted && popup.clearMenu -> DANGER_COLOR to Color.White
+            highlighted -> accentColor to accentTextColor
+            // 未选中时用卡片色：旧实现取「键帽文字色」当底色，深色主题下会变成一块
+            // 纯白/纯黑的大色块，比提示本身还抢眼
+            else -> popupColor to textColor
+        }
+        val style = keyTextStyle.copy(color = bubbleTextColor)
+        val layout = textMeasurer.measure(text, style, maxLines = 1)
+        val textWidth = layout.size.width.toFloat()
+        val textHeight = layout.size.height.toFloat()
+
+        val anchor = popup.anchor
+        val padH = keyTextSizePx * MENU_BUBBLE_PAD_H_RATIO
+        val padV = keyTextSizePx * MENU_BUBBLE_PAD_V_RATIO
+        val bubbleWidth = (textWidth + padH * 2f)
+            .coerceAtLeast(min(anchor.width, size.width))
+            .coerceAtMost(size.width)
+        val bubbleHeight = (textHeight + padV * 2f)
+            .coerceAtLeast(anchor.height * MENU_BUBBLE_MIN_HEIGHT_RATIO)
+            .coerceAtMost(size.height)
+
+        val gap = MENU_BUBBLE_GAP_DP * density
+        val left = (anchor.center.x - bubbleWidth / 2f)
+            .coerceIn(0f, max(0f, size.width - bubbleWidth))
+        // 上方放得下就浮在按键上沿，否则翻到按键下方；两种情况都不许出界
+        var top = anchor.top - bubbleHeight - gap
+        if (top < 0f) top = anchor.bottom + gap
+        top = top.coerceIn(0f, max(0f, size.height - bubbleHeight))
+
+        val radius = CornerRadius(bubbleHeight * MENU_BUBBLE_RADIUS_RATIO)
+        if (!palette.isDark) {
+            drawRoundRect(
+                color = palette.shadow.copy(alpha = 0.16f * appear),
+                topLeft = Offset(left, top + gap),
+                size = Size(bubbleWidth, bubbleHeight),
+                cornerRadius = radius,
+            )
+        }
+        drawRoundRect(
+            color = bubbleColor.copy(alpha = appear),
+            topLeft = Offset(left, top),
+            size = Size(bubbleWidth, bubbleHeight),
+            cornerRadius = radius,
+        )
+        drawText(
+            layout,
+            topLeft = Offset(
+                left + (bubbleWidth - textWidth) / 2f,
+                top + (bubbleHeight - textHeight) / 2f,
+            ),
+            alpha = appear,
+        )
     }
 
     /** 水平位置：单字符按墨迹居中（全角标点墨迹偏左），多字符按步进居中 */
@@ -1050,8 +1360,20 @@ private class KeyPainter(
         private const val CAP_HEIGHT_RATIO = 0.72f
         private const val SYMBOL_MIN_TOP_RATIO = 0.05f
         private const val KEY_CENTER_OFFSET_RATIO = 0.06f
-        private const val KEY_SHADOW_NEAR_COLOR = 0x3D000000
-        private const val KEY_SHADOW_FAR_COLOR = 0x1A000000
+
+        /** 「清空」这类破坏性操作的高亮色（不跟随主题，保持警示语义） */
+        private val DANGER_COLOR = Color(0xFFE5484D)
+
+        /** 菜单气泡内边距（相对键盘字号）与最小高度（相对按键高度） */
+        private const val MENU_BUBBLE_PAD_H_RATIO = 0.6f
+        private const val MENU_BUBBLE_PAD_V_RATIO = 0.4f
+        private const val MENU_BUBBLE_MIN_HEIGHT_RATIO = 0.9f
+
+        /** 菜单气泡圆角（相对气泡高度） */
+        private const val MENU_BUBBLE_RADIUS_RATIO = 0.3f
+
+        /** 菜单气泡与按键的间距（dp） */
+        private const val MENU_BUBBLE_GAP_DP = 2f
 
         /** 汉字/多字符标签按墨迹居中；单个字母、数字、标点沿用统一字母基线 */
         private fun isStandaloneLabel(label: String): Boolean {

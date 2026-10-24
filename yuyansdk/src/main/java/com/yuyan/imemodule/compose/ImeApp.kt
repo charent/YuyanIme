@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -28,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -45,12 +48,16 @@ import com.yuyan.imemodule.R
 import com.yuyan.imemodule.compose.keyboard.CandidateBar
 import com.yuyan.imemodule.compose.keyboard.ClipboardPanel
 import com.yuyan.imemodule.compose.keyboard.HandwritingSession
+import com.yuyan.imemodule.compose.keyboard.ImeDragHandle
+import com.yuyan.imemodule.compose.keyboard.ImeIconButton
 import com.yuyan.imemodule.compose.keyboard.KeyGrid
+import com.yuyan.imemodule.compose.keyboard.LocalImePalette
 import com.yuyan.imemodule.compose.keyboard.PhraseEditorBar
 import com.yuyan.imemodule.compose.keyboard.SettingsMenuPanel
 import com.yuyan.imemodule.compose.keyboard.SymbolPanel
 import com.yuyan.imemodule.compose.keyboard.T9PrefixColumn
 import com.yuyan.imemodule.compose.keyboard.CandidatesPanel
+import com.yuyan.imemodule.compose.keyboard.imeClickable
 import com.yuyan.imemodule.data.theme.Theme
 import com.yuyan.imemodule.data.theme.ThemeManager
 import com.yuyan.imemodule.entity.keyboard.SoftKey
@@ -246,12 +253,16 @@ private fun KeyboardArea(
     revision: Int,
 ) {
     if (type == null) return
-    when (type) {
-        KeyboardManager.KeyboardType.SYMBOL -> SymbolPanel(uiState, controller)
-        KeyboardManager.KeyboardType.SETTINGS -> SettingsMenuPanel(uiState, controller)
-        KeyboardManager.KeyboardType.ClipBoard -> ClipboardPanel(uiState, controller)
-        KeyboardManager.KeyboardType.CANDIDATES -> CandidatesPanel(controller)
-        else -> InputKeyboardArea(type, uiState, controller, revision)
+    // 不做面板切换的滑入/淡入：键盘 ↔ 功能宫格 ↔ 符号之间高频切换，
+    // 整块面板动起来会让视觉锚点（按键位置）漂移，实测比瞬时切换更晕
+    Box(Modifier.fillMaxSize()) {
+        when (type) {
+            KeyboardManager.KeyboardType.SYMBOL -> SymbolPanel(uiState, controller)
+            KeyboardManager.KeyboardType.SETTINGS -> SettingsMenuPanel(uiState, controller)
+            KeyboardManager.KeyboardType.ClipBoard -> ClipboardPanel(uiState, controller)
+            KeyboardManager.KeyboardType.CANDIDATES -> CandidatesPanel(controller)
+            else -> InputKeyboardArea(type, uiState, controller, revision)
+        }
     }
 }
 
@@ -470,11 +481,13 @@ private fun FullDisplayIcon(mode: FullDisplayKeyMode, tint: Color, onClick: () -
         Spacer(Modifier.width(0.dp))
         return
     }
-    Image(
-        painter = painterResource(res),
+    ImeIconButton(
+        iconRes = res,
         contentDescription = null,
-        colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(tint),
-        modifier = Modifier.size(28.dp).clickable { onClick() },
+        tint = tint,
+        size = 34.dp,
+        iconSize = 24.dp,
+        onClick = onClick,
     )
 }
 
@@ -493,20 +506,22 @@ private fun OneHandPlaceholder(controller: ImeController, leftSide: Boolean) {
     ) {
         Spacer(Modifier.weight(1f))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Image(
-                painter = painterResource(R.drawable.ic_menu_one_hand),
+            ImeIconButton(
+                iconRes = R.drawable.ic_menu_one_hand,
                 contentDescription = null,
-                colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(Color(theme.keyTextColor)),
-                modifier = Modifier.size(32.dp).clickable { toggleOneHanded() },
+                tint = Color(theme.keyTextColor),
+                size = 38.dp,
+                iconSize = 26.dp,
+                onClick = { toggleOneHanded() },
             )
-            Image(
-                painter = painterResource(
-                    if (controller.state.value.oneHandedLeft) R.drawable.ic_menu_one_hand_right
-                    else R.drawable.ic_menu_one_hand
-                ),
+            ImeIconButton(
+                iconRes = if (controller.state.value.oneHandedLeft) R.drawable.ic_menu_one_hand_right
+                else R.drawable.ic_menu_one_hand,
                 contentDescription = null,
-                colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(Color(theme.keyTextColor)),
-                modifier = Modifier.size(32.dp).clickable { switchOneHandedSide(controller) },
+                tint = Color(theme.keyTextColor),
+                size = 38.dp,
+                iconSize = 26.dp,
+                onClick = { switchOneHandedSide(controller) },
             )
         }
         Spacer(Modifier.height(with(density) { controller.navbarInset.toDp() }))
@@ -580,84 +595,105 @@ private fun FloatMoveBar(controller: ImeController) {
             },
         contentAlignment = Alignment.Center,
     ) {
-        Image(
-            painter = painterResource(R.drawable.ic_horizontal_line),
-            contentDescription = null,
-            colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(Color(theme.keyTextColor)),
-            modifier = Modifier.size(width = 40.dp, height = 12.dp),
-        )
+        ImeDragHandle(color = Color(theme.keyTextColor), width = 42.dp, height = 4.dp)
     }
 }
 
 /** 键盘高度调整浮层（键盘菜单 →「键盘高度」） */
+/**
+ * 键盘高度调节。
+ *
+ * 旧实现是「整块盖住键盘 + 顶部拖动条，上下拖 10dp 改 1%」——既没有刻度也没有反馈，
+ * 用户只能凭手感试。Compose 版改成一张底部调节卡：滑杆 + 百分比读数，
+ * 拖动时只更新读数，松手才真正重建键盘（重建要清键盘缓存，连续触发会掉帧）。
+ */
 @Composable
 private fun HeightAdjuster(controller: ImeController) {
     val env = remember { EnvironmentSingleton.instance }
+    val palette = LocalImePalette.current
     val theme = LocalImeTheme.current
     var ratio by remember { mutableFloatStateOf(env.keyBoardHeightRatio) }
-    var accumulated by remember { mutableFloatStateOf(0f) }
+
+    fun apply(value: Float) {
+        env.keyBoardHeightRatio = value
+        env.initData()
+        KeyboardLoaderUtil.instance.clearKeyboardMap()
+        KeyboardManager.instance.clearKeyboard()
+        controller.bumpKeyboardRevision()
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(theme.keyboardColor).copy(alpha = 0.92f)),
+            .background(Color.Black.copy(alpha = 0.32f)),
+        contentAlignment = Alignment.BottomCenter,
     ) {
-        Column(Modifier.fillMaxSize()) {
-            // 顶部拖动条：上下拖动 10dp 改 1%
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(72.dp)
-                    .pointerInput(Unit) {
-                        detectDragGestures(
-                            onDragEnd = { accumulated = 0f },
-                            onDrag = { _, drag ->
-                                accumulated -= drag.y
-                                val step = 10f * density
-                                if (abs(accumulated) >= step) {
-                                    val delta = (accumulated / step).toInt() * 0.01f
-                                    accumulated -= delta / 0.01f * step
-                                    ratio = (ratio + delta).coerceIn(0.15f, 0.6f)
-                                    env.keyBoardHeightRatio = ratio
-                                    env.initData()
-                                    KeyboardLoaderUtil.instance.clearKeyboardMap()
-                                    KeyboardManager.instance.clearKeyboard()
-                                    controller.bumpKeyboardRevision()
-                                }
-                            },
-                        )
-                    },
-                contentAlignment = Alignment.Center,
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
+                .background(palette.card)
+                .padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 14.dp),
+        ) {
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                ImeDragHandle(color = Color(theme.keyTextColor), width = 36.dp, height = 4.dp)
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Image(
-                    painter = painterResource(R.drawable.ic_horizontal_line),
-                    contentDescription = null,
-                    colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(Color(theme.keyTextColor)),
-                    modifier = Modifier.size(width = 64.dp, height = 16.dp),
+                Text(
+                    text = controller.string(R.string.setting_ime_keyboard_height),
+                    color = palette.onSurface,
+                    style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Medium),
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = "${(ratio * 100).roundToInt()}%",
+                    color = palette.accent,
+                    style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Bold),
                 )
             }
+            Slider(
+                value = ratio,
+                onValueChange = { ratio = ((it * 100).roundToInt() / 100f).coerceIn(0.15f, 0.6f) },
+                onValueChangeFinished = { apply(ratio) },
+                valueRange = 0.15f..0.6f,
+                modifier = Modifier.fillMaxWidth(),
+            )
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     text = controller.string(R.string.setting_ime_keyboard_height_reset),
-                    color = Color(theme.keyTextColor),
-                    style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Medium),
-                    modifier = Modifier.clickable {
-                        env.keyBoardHeightRatio = 0.3f
-                        env.initData()
-                        KeyboardLoaderUtil.instance.clearKeyboardMap()
-                        KeyboardManager.instance.clearKeyboard()
-                        controller.bumpKeyboardRevision()
-                    },
+                    color = palette.muted,
+                    style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Medium),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .imeClickable() {
+                            ratio = 0.3f
+                            apply(ratio)
+                        }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                 )
-                Text(
-                    text = controller.string(R.string.setting_ime_keyboard_height_sure),
-                    color = Color(theme.keyTextColor),
-                    style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Medium),
-                    modifier = Modifier.clickable { controller.hideHeightAdjuster() },
-                )
+                Spacer(Modifier.weight(1f))
+                Box(
+                    modifier = Modifier
+                        .height(38.dp)
+                        .clip(RoundedCornerShape(19.dp))
+                        .background(palette.accent)
+                        .imeClickable() { controller.hideHeightAdjuster() }
+                        .padding(horizontal = 26.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = controller.string(R.string.setting_ime_keyboard_height_sure),
+                        color = palette.onAccent,
+                        style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Medium),
+                    )
+                }
             }
         }
     }
