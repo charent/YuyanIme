@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
 import com.yuyan.imemodule.R
 import com.yuyan.imemodule.compose.GestureTuning
@@ -176,6 +177,8 @@ fun KeyGrid(
                     scaleY = scaleY,
                     keyTextSizePx = keyTextSizePx,
                     smallTextSizePx = smallTextSizePx,
+                    density = density,
+                    fontScale = fontScale,
                 )
                 val rendered = painter.buildKeys(keyboard, keys)
                 val strokeColor = Color(theme.keyTextColor)
@@ -679,6 +682,8 @@ private class KeyPainter(
     private val scaleY: Float,
     private val keyTextSizePx: Int,
     private val smallTextSizePx: Int,
+    private val density: Float,
+    private val fontScale: Float,
 ) {
     private val textColor = Color(theme.keyTextColor)
     private val keyColor = Color(theme.keyBackgroundColor)
@@ -694,23 +699,26 @@ private class KeyPainter(
     private val mnemonicEnabled = AppPrefs.getInstance().keyboardSetting.keyboardMnemonic.getValue()
     private val styleMode = ThemeManager.prefs.skbStyleMode.getValue()
 
+    /** EnvironmentSingleton 的字号是像素值（旧实现直接赋给 Paint.textSize），按密度换算成等价 sp */
+    private fun pxToSp(px: Float): TextUnit = (px / (density * fontScale)).sp
+
     private val keyTextStyle = TextStyle(
         color = textColor,
-        fontSize = keyTextSizePx.sp,
+        fontSize = pxToSp(keyTextSizePx.toFloat()),
         fontWeight = if (fontBold) FontWeight.Bold else FontWeight.Medium,
     )
     private val functionTextStyle = TextStyle(
         color = textColor,
-        fontSize = keyTextSizePx.sp,
+        fontSize = pxToSp(keyTextSizePx.toFloat()),
         fontWeight = if (fontBold) FontWeight.Bold else FontWeight.Normal,
     )
     private val smallTextStyle = TextStyle(
         color = textColor,
-        fontSize = (smallTextSizePx * SYMBOL_SIZE_RATIO).sp,
+        fontSize = pxToSp(smallTextSizePx * SYMBOL_SIZE_RATIO),
     )
     private val mnemonicTextStyle = TextStyle(
         color = textColor,
-        fontSize = (smallTextSizePx * 0.7f).sp,
+        fontSize = pxToSp(smallTextSizePx * 0.7f),
     )
 
     fun buildKeys(keyboard: SoftKeyboard, keys: List<SoftKey>): List<RenderedKey> {
@@ -769,6 +777,27 @@ private class KeyPainter(
 
             val textStyle = if (isStandaloneLabel(displayLabel)) functionTextStyle else keyTextStyle
 
+            // 垂直布局沿用旧 TextKeyboard 的固定比例：所有按键共用同一条字母基线；
+            // 上方小标点按「字母帽顶 - 间距 - 符号帽高」定位，放不下时整体下压字母。
+            val keyTextSizeF = keyTextSizePx.toFloat()
+            val smallTextSizeF = smallTextSizePx * SYMBOL_SIZE_RATIO
+            val letterCap = keyTextSizeF * CAP_HEIGHT_RATIO
+            val symbolCap = smallTextSizeF * CAP_HEIGHT_RATIO
+            val symbolGap = smallTextSizeF * SYMBOL_GAP_RATIO
+            val stackedSymbol = showSymbol && rawSmall.isNotEmpty() &&
+                    styleMode == SkbStyleMode.Yuyan && displayLabel.isNotEmpty()
+            val mnemonicShown = mnemonicEnabled && rawMnemonic.isNotEmpty()
+
+            var letterCenterY = if (mnemonicShown) top + height * 0.42f
+            else (top + bottom) / 2f + height * KEY_CENTER_OFFSET_RATIO
+            var symbolInkTop = letterCenterY - letterCap / 2f - symbolGap - symbolCap
+            val minSymbolTop = top + height * SYMBOL_MIN_TOP_RATIO
+            if (stackedSymbol && symbolInkTop < minSymbolTop) {
+                letterCenterY += minSymbolTop - symbolInkTop
+                symbolInkTop = minSymbolTop
+            }
+            val letterBaseline = letterCenterY + letterCap / 2f
+
             if (drawable != null) {
                 runCatching { drawable.setTint(theme.keyTextColor) }
                 val sizePx = min(width, height) * ICON_SIZE_RATIO
@@ -780,9 +809,17 @@ private class KeyPainter(
                 label = textMeasurer.measure(
                     displayLabel, textStyle, overflow = TextOverflow.Clip, maxLines = 1, constraints = constraints
                 )
+                val labelY = if (isStandaloneLabel(displayLabel)) {
+                    val box = runCatching { label.getBoundingBox(displayLabel.lastIndex) }.getOrNull()
+                    val centerY = (top + bottom) / 2f + height * KEY_CENTER_OFFSET_RATIO
+                    if (box != null) centerY - (box.top + box.bottom) / 2f
+                    else centerY - label.size.height / 2f
+                } else {
+                    letterBaseline - label.firstBaseline
+                }
                 labelOffset = Offset(
                     computeLabelX(left, right, key, displayLabel, label),
-                    computeBaselineOffsetY(top, bottom, displayLabel, label),
+                    labelY,
                 )
             }
 
@@ -790,19 +827,18 @@ private class KeyPainter(
                 smallLabel = textMeasurer.measure(
                     rawSmall, smallTextStyle, overflow = TextOverflow.Clip, maxLines = 1, constraints = constraints
                 )
-                val stacked = styleMode == SkbStyleMode.Yuyan && label != null
-                smallOffset = if (stacked) {
-                    // 雅燕风格：小标点落在字母正上方
-                    val gap = smallTextSizePx * SYMBOL_GAP_RATIO
+                smallOffset = if (stackedSymbol) {
+                    val box = runCatching { smallLabel.getBoundingBox(0) }.getOrNull()
+                    val symbolTop = if (box != null) symbolInkTop + symbolCap - box.bottom
+                    else symbolInkTop + symbolCap - smallLabel.size.height
                     Offset(
                         computeInkCenterX(left, right, rawSmall, smallLabel),
-                        labelOffset.y + label.firstBaseline - gap - smallLabel.size.height,
+                        symbolTop,
                     )
                 } else {
-                    // 其它风格：贴键帽右上方
                     Offset(
                         right - smallLabel.size.width - keyXMargin * 0.6f * scaleX,
-                        top + height * 0.08f,
+                        top + height * 0.275f - smallLabel.firstBaseline,
                     )
                 }
             }
@@ -813,7 +849,7 @@ private class KeyPainter(
                 )
                 mnemonicOffset = Offset(
                     (left + right) / 2f - mnemonic.size.width / 2f,
-                    top + height * 0.70f,
+                    top + height * 0.875f - mnemonic.firstBaseline,
                 )
             }
 
@@ -999,37 +1035,13 @@ private class KeyPainter(
         return (left + right) / 2f - layout.size.width / 2f
     }
 
-    /**
-     * 垂直位置：用「基线定位」而不是「盒子居中」。
-     *
-     * 单个字母/数字按统一字母基线摆放（整行高低一致）；汉字/多字符标签按墨迹居中。
-     */
-    private fun computeBaselineOffsetY(
-        top: Float,
-        bottom: Float,
-        text: String,
-        layout: TextLayoutResult,
-    ): Float {
-        val centerY = (top + bottom) / 2f
-        return if (isStandaloneLabel(text)) {
-            val box = runCatching { layout.getBoundingBox(text.lastIndex) }.getOrNull()
-            if (box != null) {
-                centerY - (box.top + box.bottom) / 2f
-            } else {
-                centerY - layout.size.height / 2f
-            }
-        } else {
-            val capHeight = layout.size.height * CAP_HEIGHT_RATIO
-            val baseline = centerY + capHeight / 2f
-            baseline - layout.firstBaseline
-        }
-    }
-
     companion object {
         private const val ICON_SIZE_RATIO = 0.42f
         private const val SYMBOL_SIZE_RATIO = 0.75f
-        private const val SYMBOL_GAP_RATIO = 0.5f
+        private const val SYMBOL_GAP_RATIO = 1.0f
         private const val CAP_HEIGHT_RATIO = 0.72f
+        private const val SYMBOL_MIN_TOP_RATIO = 0.05f
+        private const val KEY_CENTER_OFFSET_RATIO = 0.06f
         private const val KEY_SHADOW_NEAR_COLOR = 0x3D000000
         private const val KEY_SHADOW_FAR_COLOR = 0x1A000000
 

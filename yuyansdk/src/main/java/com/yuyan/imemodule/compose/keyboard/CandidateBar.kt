@@ -46,6 +46,7 @@ import com.yuyan.imemodule.data.theme.ThemeManager
 import com.yuyan.imemodule.database.DataBaseKT
 import com.yuyan.imemodule.entity.SkbFunItem
 import com.yuyan.imemodule.keyboard.KeyboardManager
+import com.yuyan.imemodule.keyboard.isInputKeyboardType
 import com.yuyan.imemodule.prefs.behavior.SkbMenuMode
 import com.yuyan.imemodule.service.DictDecoder
 import com.yuyan.imemodule.singleton.EnvironmentSingleton
@@ -113,8 +114,14 @@ fun CandidateBar(
         }
 
         // 左侧设置菜单入口（候选态与菜单态都在）
+        // 旧实现是 LevelListDrawable + setLevel(0/1)，Compose 的 painterResource
+        // 不支持 level-list，按键盘类型直接选对应矢量图。
+        val menuLeftIcon = if (keyboardType.isInputKeyboardType())
+            R.drawable.ic_sdk_launcher_transparent
+        else
+            R.drawable.ic_menu_arrow_up
         Image(
-            painter = painterResource(R.drawable.sdk_level_candidates_menu_left),
+            painter = painterResource(menuLeftIcon),
             contentDescription = controller.string(R.string.skb_item_settings),
             colorFilter = ColorFilter.tint(textColor),
             modifier = Modifier
