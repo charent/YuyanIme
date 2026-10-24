@@ -5,9 +5,9 @@ plugins {
 
 android {
     compileSdk 36
-    namespace 'com.yuyan'
+    namespace 'com.whale'
     defaultConfig {
-        applicationId "com.yuyan.pinyin"
+        applicationId "com.whale.pinyin"
         minSdk 23
         targetSdk 36
         versionCode Integer.valueOf(versionCodeDate())
@@ -95,7 +95,7 @@ android {
     }
     android.applicationVariants.configureEach { variant ->
         variant.outputs.configureEach {
-            outputFileName = "yuyanIme_${versionCodeDate()}_${variant.buildType.name}.apk"
+            outputFileName = "whaleIme_${versionCodeDate()}_${variant.buildType.name}.apk"
         }
     }
 }
@@ -110,5 +110,5 @@ static def versionNameDate() {
 
 dependencies {
     implementation fileTree(include: ['*.jar'], dir: 'libs')
-    implementation project(':yuyansdk')
+    implementation project(':whalesdk')
 }

@@ -1,0 +1,135 @@
+plugins {
+    id 'com.android.library'
+    // 历史上这里同时声明了 'org.jetbrains.kotlin.android' 与 'kotlin-android'
+    // （两者是同一插件的不同 id），属于重复声明，已删除后者。
+    id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.compose'
+    id 'com.google.devtools.ksp'
+    id 'kotlin-parcelize'
+    id 'kotlinx-serialization'
+}
+static def versionNameDate() {
+    return new Date().format("yyyyMMdd.HH", TimeZone.getTimeZone("GMT+8"))
+}
+
+static def getAppGitHead() {
+    return "git rev-parse HEAD".execute().text.trim()
+}
+
+static def getAppBuildTime() {
+    return "git log -1 --pretty=%ai".execute().text.trim()
+}
+
+// 原生引擎（librime 1.17.0）的编译不走 Gradle：
+//   pwsh -File src/main/cpp/scripts/build-engine.ps1 -Abi arm64-v8a
+// 该脚本会编译依赖 + JNI，并把产物直接覆盖到 libs/<abi>/libwhaleime.so，
+// 因此打包流程与原来完全一致（sourceSets 的 jniLibs 仍指向 libs）。
+// 之所以不用 externalNativeBuild：libs 下同时存在手写等第三方 .so，
+// 两条路径都会产出 libwhaleime.so，会在打包时冲突。
+
+android {
+    compileSdk 36
+    namespace 'com.whale.imemodule'
+    defaultConfig {
+        minSdk 23
+        targetSdk 35
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a', "x86", "x86_64"
+        }
+        javaCompileOptions {
+            annotationProcessorOptions {
+                arguments = [AROUTER_MODULE_NAME: project.getName()]
+            }
+        }
+        lintOptions {
+            abortOnError false
+        }
+
+        buildConfigField "String", "versionName", "\"${versionNameDate()}\""
+        buildConfigField "String", "AppCommitHead", "\"${getAppGitHead()}\""
+        buildConfigField "String", "AppBuildTime", "\"${getAppBuildTime()}\""
+    }
+
+    //多渠道打包: app中多渠道配置要一致
+    flavorDimensions = ["default"]
+    productFlavors {
+        offline {
+            dimension "default"
+            buildConfigField "Boolean", "offline", "true"
+        }
+    }
+
+    buildFeatures {
+        buildConfig = true
+        // 界面全部是 Compose，没有 ViewBinding 使用方
+        compose = true
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard.cfg'
+            resValue("string", "app_name", "@string/ime_whale_name")
+            resValue("drawable", "app_icon", "@drawable/ic_sdk_launcher")
+        }
+        debug {
+            resValue("string", "app_name", "@string/ime_whale_name_debug")
+            resValue("drawable", "app_icon", "@drawable/ic_sdk_launcher_debug")
+        }
+    }
+    sourceSets {
+        offline {
+            jniLibs.srcDirs = ['libs']
+        }
+    }
+
+    //第三方库使用java1.8
+    compileOptions {
+        sourceCompatibility 21
+        targetCompatibility 21
+    }
+    kotlinOptions {
+        jvmTarget = '21'
+    }
+}
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.aar', '*.jar'], exclude: [])
+    implementation 'androidx.emoji2:emoji2:1.5.0'
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:2.1.20"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0"
+    implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3'
+    implementation 'androidx.exifinterface:exifinterface:1.3.7'
+    implementation "androidx.room:room-runtime:2.6.1"
+    ksp "androidx.room:room-compiler:2.6.1"
+    implementation "androidx.room:room-ktx:2.6.1"
+
+    // ---- Jetpack Compose 迁移（见 docs/compose-migration-plan.md §2.7 / §2.8）----
+    // BOM 取 2025 稳定版：material3 1.3.x + foundation 1.8.x，
+    // 其字节码元数据与 Kotlin 2.1.x 编译器兼容（更新的 2026.x BOM 由 Kotlin 2.2+ 编译，不可用）。
+    implementation platform('androidx.compose:compose-bom:2025.06.01')
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.ui:ui-text'
+    implementation 'androidx.compose.foundation:foundation'
+    implementation 'androidx.compose.material3:material3'
+    // 高层动画（animateColorAsState / AnimatedContent）：候选词选中态、面板切换过渡
+    implementation 'androidx.compose.animation:animation'
+    // collectAsStateWithLifecycle
+    implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.7'
+    // Phase 4 才会用到 activity-compose / navigation-compose，按方案提前引入
+    implementation 'androidx.activity:activity-compose:1.9.3'
+    implementation 'androidx.navigation:navigation-compose:2.8.5'
+    // Phase 1 验收用：检查 Recomposer / ViewModelStore 是否泄漏
+    debugImplementation 'com.squareup.leakcanary:leakcanary-android:2.14'
+}
+
+tasks.register('makeaar', Copy) {
+    from('build/outputs/aar/')
+    into('build/outputs/aar/')
+    include('imeModule-dev-debug.aar')
+    rename('imeModule-dev-debug.aar', 'imesdk_' + versionNameDate() + '.aar')
+}
+
+makeaar.dependsOn(build)

@@ -1,4 +1,4 @@
-name: Build and Release YuyanIme APK
+name: Build and Release WhaleIME APK
 # 触发条件：当推送符合 'v*' 格式的标签时触发，例如 v1.0.0
 on:
   push:

@@ -1,7 +1,7 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-    Merge the yuyansdk git submodule into the monorepo (git subtree, full history).
+    Merge the whalesdk git submodule into the monorepo (git subtree, full history).
 .DESCRIPTION
     Runs all git operations on a NEW branch (default: merge-monorepo). master is never touched.
     Backs up gitignored build caches (native-build, prebuilt) and the submodule gitdir
@@ -12,7 +12,7 @@
 .PARAMETER Branch
     Working branch name. Must not already exist.
 .PARAMETER BackupRoot
-    Backup directory. Default: <repo parent>\yuyansdk-monorepo-backup-<timestamp>
+    Backup directory. Default: <repo parent>\whalesdk-monorepo-backup-<timestamp>
 .EXAMPLE
     pwsh -File scripts/merge-monorepo.ps1
 #>
@@ -40,7 +40,7 @@ function CopyTree([string]$src, [string]$dst) {
 # ---------------------------------------------------------------- locate repo
 $Repo = Split-Path -Parent $PSScriptRoot
 Set-Location $Repo
-$Sdk = Join-Path $Repo 'yuyansdk'
+$Sdk = Join-Path $Repo 'whalesdk'
 Info "repo root : $Repo"
 Info "submodule : $Sdk"
 
@@ -52,44 +52,44 @@ $SubTree = $null
 if ($SubmodulePresent) {
     # normal mode: submodule worktree exists
     $dirtySub = git -C $Sdk status --porcelain --untracked-files=no
-    if ($dirtySub) { Die "yuyansdk has uncommitted changes:`n$dirtySub" }
-    Ok 'yuyansdk tracked tree is clean'
+    if ($dirtySub) { Die "whalesdk has uncommitted changes:`n$dirtySub" }
+    Ok 'whalesdk tracked tree is clean'
 
-    Info 'fetching yuyansdk origin to verify everything is pushed...'
+    Info 'fetching whalesdk origin to verify everything is pushed...'
     git -C $Sdk fetch origin --quiet
-    if ($LASTEXITCODE -ne 0) { Die 'git fetch origin failed inside yuyansdk (check network / ssh)' }
+    if ($LASTEXITCODE -ne 0) { Die 'git fetch origin failed inside whalesdk (check network / ssh)' }
 
     $ahead = @(git -C $Sdk rev-list --count 'origin/master..master')
-    if ($LASTEXITCODE -ne 0) { Die 'cannot compare yuyansdk master with origin/master' }
+    if ($LASTEXITCODE -ne 0) { Die 'cannot compare whalesdk master with origin/master' }
     if ([int]$ahead[0] -gt 0) {
-        Die ("yuyansdk has {0} unpushed commit(s). Push charent/yuyansdk first - this is the only safety net for the history." -f [int]$ahead[0])
+        Die ("whalesdk has {0} unpushed commit(s). Push charent/whalesdk first - this is the only safety net for the history." -f [int]$ahead[0])
     }
-    Ok 'yuyansdk master is fully pushed to origin'
+    Ok 'whalesdk master is fully pushed to origin'
 
     $SubSha = (git -C $Sdk rev-parse HEAD).Trim()
     $SubTree = (git -C $Sdk rev-parse 'master^{tree}').Trim()
 } else {
     # resume mode: worktree was removed earlier/manually, gitlink must still be in index
-    $gitlink = @(git ls-files -s yuyansdk | Select-String '^160000')
-    if ($gitlink.Count -eq 0) { Die 'yuyansdk worktree absent and gitlink not in index - nothing to resume; restore with: git submodule update --init yuyansdk' }
+    $gitlink = @(git ls-files -s whalesdk | Select-String '^160000')
+    if ($gitlink.Count -eq 0) { Die 'whalesdk worktree absent and gitlink not in index - nothing to resume; restore with: git submodule update --init whalesdk' }
     $SubSha = (($gitlink[0].ToString()) -split '\s+')[1].Trim()
-    Info 'yuyansdk worktree absent but gitlink present - RESUME MODE'
+    Info 'whalesdk worktree absent but gitlink present - RESUME MODE'
 
     # push check without a worktree: compare gitlink sha with the remote branch head
-    $subUrl = (git config -f .gitmodules submodule.yuyansdk.url).Trim()
+    $subUrl = (git config -f .gitmodules submodule.whalesdk.url).Trim()
     $remoteHead = (git ls-remote $subUrl refs/heads/master)
     if ($LASTEXITCODE -ne 0 -or -not $remoteHead) { Die "cannot check remote state of $subUrl" }
     $remoteSha = ($remoteHead -split '\s+')[0].Trim()
     if ($remoteSha -ne $SubSha) {
-        Die "remote master ($remoteSha) != gitlink ($SubSha) - push charent/yuyansdk first"
+        Die "remote master ($remoteSha) != gitlink ($SubSha) - push charent/whalesdk first"
     }
     Ok 'remote master matches gitlink sha - history is safe on origin'
 }
 Info "submodule HEAD : $SubSha"
 if ($SubTree) { Info "submodule tree : $SubTree" }
 
-# main repo must be clean, except the not-yet-staged yuyansdk deletion in resume mode
-$dirtyMain = @(git status --porcelain --untracked-files=no | Where-Object { $_ -notmatch '^\s*[D]+\s+yuyansdk\s*$' })
+# main repo must be clean, except the not-yet-staged whalesdk deletion in resume mode
+$dirtyMain = @(git status --porcelain --untracked-files=no | Where-Object { $_ -notmatch '^\s*[D]+\s+whalesdk\s*$' })
 if ($dirtyMain.Count -gt 0) { Die ("main repo has uncommitted changes:`n" + ($dirtyMain -join "`n")) }
 Ok 'main repo tracked tree is clean'
 
@@ -114,7 +114,7 @@ Ok "on branch $Branch"
 # ---------------------------------------------------------------- backup
 Step 'Backup build caches and submodule gitdir (outside the repo)'
 if (-not $BackupRoot) {
-    $BackupRoot = Join-Path (Split-Path -Parent $Repo) ("yuyansdk-monorepo-backup-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    $BackupRoot = Join-Path (Split-Path -Parent $Repo) ("whalesdk-monorepo-backup-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 }
 New-Item -ItemType Directory -Force -Path $BackupRoot | Out-Null
 Info "backup dir : $BackupRoot"
@@ -135,11 +135,11 @@ foreach ($c in $cachePairs) {
     }
 }
 
-$SubGitBackup = Join-Path $BackupRoot 'yuyansdk.git'
-CopyTree (Join-Path $Repo '.git\modules\yuyansdk') $SubGitBackup
+$SubGitBackup = Join-Path $BackupRoot 'whalesdk.git'
+CopyTree (Join-Path $Repo '.git\modules\whalesdk') $SubGitBackup
 Ok 'submodule gitdir backed up (subtree import source, no network needed)'
 
-# The copied gitdir still carries core.worktree = ../../../yuyansdk (a RELATIVE path).
+# The copied gitdir still carries core.worktree = ../../../whalesdk (a RELATIVE path).
 # From the backup location that target does not exist and every git call dies with
 # "fatal: cannot chdir". Turn the backup into a proper bare repo instead.
 $backupConfig = Join-Path $SubGitBackup 'config'
@@ -163,7 +163,7 @@ if (-not $SubTree) {
 # ---------------------------------------------------------------- remove submodule
 Step 'Remove submodule'
 if (Test-Path $Sdk) {
-    git submodule deinit -f yuyansdk
+    git submodule deinit -f whalesdk
     if ($LASTEXITCODE -ne 0) {
         Info 'deinit reported an error (possibly already unregistered) - continuing'
     }
@@ -173,51 +173,51 @@ if (Test-Path $Sdk) {
         New-Item -ItemType Directory -Force -Path "$env:TEMP\empty-for-delete" | Out-Null
         robocopy "$env:TEMP\empty-for-delete" $Sdk /MIR /NFL /NDL /NJH /NJS /NP /R:1 /W:1 | Out-Null
         Remove-Item -Recurse -Force $Sdk -ErrorAction SilentlyContinue
-        if (Test-Path $Sdk) { Die 'could not remove yuyansdk worktree (files locked by another process?) - close IDEs and re-run' }
+        if (Test-Path $Sdk) { Die 'could not remove whalesdk worktree (files locked by another process?) - close IDEs and re-run' }
         Ok 'worktree force-removed'
     } else {
         Ok 'deinit done (worktree cleared - caches are safe in the backup)'
     }
 } else {
-    Info 'yuyansdk worktree already absent - skipping deinit'
+    Info 'whalesdk worktree already absent - skipping deinit'
 }
 
-git rm -f yuyansdk
+git rm -f whalesdk
 if ($LASTEXITCODE -ne 0) {
-    Info 'git rm yuyansdk failed (missing worktree?) - trying index-only removal'
-    git rm -f --cached yuyansdk
-    if ($LASTEXITCODE -ne 0) { Die 'git rm yuyansdk failed' }
+    Info 'git rm whalesdk failed (missing worktree?) - trying index-only removal'
+    git rm -f --cached whalesdk
+    if ($LASTEXITCODE -ne 0) { Die 'git rm whalesdk failed' }
 }
 git rm -f .gitmodules
 if ($LASTEXITCODE -ne 0) { Die 'git rm .gitmodules failed' }
 
-$modulesDir = Join-Path $Repo '.git\modules\yuyansdk'
+$modulesDir = Join-Path $Repo '.git\modules\whalesdk'
 if (Test-Path $modulesDir) { Remove-Item -Recurse -Force $modulesDir }
 Ok 'gitlink, .gitmodules and .git/modules entry removed'
 
-git commit -m 'chore: remove yuyansdk submodule (merging into monorepo via subtree)'
+git commit -m 'chore: remove whalesdk submodule (merging into monorepo via subtree)'
 if ($LASTEXITCODE -ne 0) { Die 'commit of submodule removal failed' }
 Ok 'submodule removal committed'
 
 # ---------------------------------------------------------------- subtree add
-Step 'Import yuyansdk history via git subtree (full history, path prefix yuyansdk/)'
+Step 'Import whalesdk history via git subtree (full history, path prefix whalesdk/)'
 $Src = ($SubGitBackup -replace '\\', '/')
-git subtree add --prefix=yuyansdk $Src master -m 'chore: merge yuyansdk into monorepo (git subtree, full history)'
+git subtree add --prefix=whalesdk $Src master -m 'chore: merge whalesdk into monorepo (git subtree, full history)'
 if ($LASTEXITCODE -ne 0) { Die 'git subtree add failed' }
 Ok 'subtree import committed'
 
 # ---------------------------------------------------------------- verify
 Step 'Verify content integrity (tree object hash)'
-$MergedTree = (git rev-parse 'HEAD:yuyansdk').Trim()
+$MergedTree = (git rev-parse 'HEAD:whalesdk').Trim()
 Info "expected tree : $SubTree"
 Info "merged  tree  : $MergedTree"
 if ($MergedTree -ne $SubTree) {
     Die 'TREE HASH MISMATCH - do NOT merge this branch. Inspect with: git log --graph -20'
 }
-Ok 'tree hashes match: imported yuyansdk/ is byte-identical to the submodule'
+Ok 'tree hashes match: imported whalesdk/ is byte-identical to the submodule'
 
 # ---------------------------------------------------------------- restore caches
-Step 'Restore build caches into yuyansdk/src/main/cpp'
+Step 'Restore build caches into whalesdk/src/main/cpp'
 CopyTree (Join-Path $BackupRoot 'native-build') (Join-Path $Cpp 'native-build')
 CopyTree (Join-Path $BackupRoot 'prebuilt') (Join-Path $Cpp 'prebuilt')
 Ok 'native-build and prebuilt restored (gitignored, will not pollute the repo)'
@@ -247,9 +247,9 @@ Write-Host @"
 Merge branch '$Branch' is ready. Manual follow-ups:
 
   1. Verify (see docs/monorepo-merge-plan.md section 4.4):
-       git log --oneline -- yuyansdk | Measure-Object -Line   # >= 22 commits
+       git log --oneline -- whalesdk | Measure-Object -Line   # >= 22 commits
        .\gradlew.bat :app:assembleOfflineDebug
-       # smoke test on emulator: adb logcat -s YuyanRime librime
+       # smoke test on emulator: adb logcat -s WhaleRime librime
 
   2. Update docs that still mention the submodule:
        README.md (~line 67), AGENTS.md (lines 7/13-17), docs/build-and-run.md (45/48/401-404)
@@ -259,7 +259,7 @@ Merge branch '$Branch' is ready. Manual follow-ups:
        git merge --ff-only $Branch
        git push
 
-  4. Archive (do NOT delete) https://github.com/charent/yuyansdk afterwards.
+  4. Archive (do NOT delete) https://github.com/charent/whalesdk afterwards.
 
   5. Backup kept at: $BackupRoot
      Delete it only after arm64 device regression passes.
@@ -267,6 +267,6 @@ Merge branch '$Branch' is ready. Manual follow-ups:
 Rollback (any time before step 3):
        git switch master
        git branch -D $Branch
-       git submodule update --init yuyansdk
+       git submodule update --init whalesdk
        # then restore caches from the backup dir if needed
 "@ -ForegroundColor Yellow

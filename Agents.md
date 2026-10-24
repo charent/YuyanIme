@@ -4,7 +4,7 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 ## Project overview
 
-语燕输入法 (Yuyan IME) is an offline Android Chinese input method built on a precompiled Rime engine, written in Kotlin. The repository is a monorepo: a thin application shell (`app`) plus the full IME implementation as an Android library module (`yuyansdk`), merged from a fork of `gurecn/yuyansdk` (full history preserved via git subtree).
+小鲸鱼输入法 (Whale IME) is an offline Android Chinese input method built on a precompiled Rime engine, written in Kotlin. The repository is a monorepo: a thin application shell (`app`) plus the full IME implementation as an Android library module (`whalesdk`), merged from a fork of `gurecn/whalesdk` (full history preserved via git subtree).
 
 There are no unit/instrumentation tests (`src/test`, `src/androidTest` do not exist). Verification is done by building and running on a device.
 
@@ -19,7 +19,7 @@ Common commands:
 ./gradlew :app:assembleOfflineRelease    # build minified/signed release APK
 ./gradlew :app:installOfflineDebug       # install and launch on device
 ./gradlew clean
-./gradlew :yuyansdk:makeaar              # build SDK AAR into yuyansdk/build/outputs/aar/
+./gradlew :whalesdk:makeaar              # build SDK AAR into whalesdk/build/outputs/aar/
 ```
 
 Notes:
@@ -27,10 +27,10 @@ Notes:
 - Local build/deploy pitfalls (missing keystore, JVM target mismatch, settings white-screen crash loop, emulator's phantom physical keyboard, IME re-binding after force-stop) are documented in [`docs/build-and-run.md`](docs/build-and-run.md). Read it before debugging "it builds but nothing works".
 - The only product flavor is `offline`; build types are `debug` and `release`, so task names always include `Offline`.
 - `versionCode`/`versionName` are derived from the current date (`yyyyMMddHH`, GMT+8) in `app/build.gradle:101`; they are not manually maintained.
-- `applicationId` suffixes are `.offline` (flavor), `.debug`/`.release` (build type), e.g. `com.yuyan.pinyin.offline.release`.
+- `applicationId` suffixes are `.offline` (flavor), `.debug`/`.release` (build type), e.g. `com.whale.pinyin.offline.release`.
 - Release signing is read from `keystore/keystore.properties` (gitignored) or the env vars `RELEASE_STORE_FILE`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS`, `RELEASE_KEY_PASSWORD`. `debug` also uses the release signing config, so a debug build without a keystore is unsigned.
 - Build config compiles against Java 21 (`sourceCompatibility`/`jvmTarget = 21`); CI uses JDK 21. Use JDK 21 locally.
-- `yuyansdk` packages native libs from `yuyansdk/libs/<abi>` only via `sourceSets.offline.jniLibs.srcDirs`, and builds `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`. The app module filters to `arm64-v8a` only. The Rime engine (`libyuyanime.so`) is rebuilt out-of-band via `scripts/build-engine.ps1` (NDK/CMake scripts under `yuyansdk/src/main/cpp/scripts/`), never via Gradle `externalNativeBuild`.
+- `whalesdk` packages native libs from `whalesdk/libs/<abi>` only via `sourceSets.offline.jniLibs.srcDirs`, and builds `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`. The app module filters to `arm64-v8a` only. The Rime engine (`libwhaleime.so`) is rebuilt out-of-band via `scripts/build-engine.ps1` (NDK/CMake scripts under `whalesdk/src/main/cpp/scripts/`), never via Gradle `externalNativeBuild`.
 - CI (`.github/workflows/build.yml`) runs `./gradlew assembleOffline` on `v*` tags and uploads the APKs.
 
 ## Architecture
@@ -38,13 +38,13 @@ Notes:
 ### Module layout
 
 - `app/` — application shell only: `BaseApplication` (calls `Launcher.instance.initData`), the IME service declaration, and `res/xml/method.xml`. Nearly all code and resources live in the SDK.
-- `yuyansdk/src/main/java/com/yuyan/imemodule/` — Android/UI layer: service, keyboard views, settings, preferences, themes, Room database.
-- `yuyansdk/src/main/java/com/yuyan/inputmethod/` — engine layer: `RimeEngine`, `HWEngine`, `CustomEngine`, JNI bindings and pinyin-key conversion utilities.
-- `yuyansdk/src/main/assets/rime` — prebuilt Rime schemas/dictionaries (~112 MB), plus `opencc` and `hw` handwriting data. These are copied to `getExternalFilesDir("rime"/"hw")` on first launch, versioned by `CustomConstant.CURRENT_RIME_DICT_DATA_VERSIOM`.
+- `whalesdk/src/main/java/com/whale/imemodule/` — Android/UI layer: service, keyboard views, settings, preferences, themes, Room database.
+- `whalesdk/src/main/java/com/whale/inputmethod/` — engine layer: `RimeEngine`, `HWEngine`, `CustomEngine`, JNI bindings and pinyin-key conversion utilities.
+- `whalesdk/src/main/assets/rime` — prebuilt Rime schemas/dictionaries (~112 MB), plus `opencc` and `hw` handwriting data. These are copied to `getExternalFilesDir("rime"/"hw")` on first launch, versioned by `CustomConstant.CURRENT_RIME_DICT_DATA_VERSIOM`.
 
 ### Startup
 
-`BaseApplication.onCreate` → `Launcher.initData` (`yuyansdk/.../application/Launcher.kt:21`):
+`BaseApplication.onCreate` → `Launcher.initData` (`whalesdk/.../application/Launcher.kt:21`):
 
 1. Synchronously initializes `AppPrefs`, `ThemeManager`, opens Room (`DataBaseKT`), and `ClipboardHelper`.
 2. On a background thread, copies `assets/rime` and `assets/hw` when the stored dict version is stale, then calls `InputDispatcher.resetIme()` to start the native Rime engine, initializes EmojiCompat, and applies dark-mode settings.
@@ -58,7 +58,7 @@ Soft key tap (TextKeyboard)
   → InputView.responseKeyEvent / processKeyUp        (keyboard/InputView.kt:311)
   → InputDispatcher                                  (service/InputDispatcher.kt:7)
   → RimeEngine (candidate list, composition, case)   (inputmethod/RimeEngine.kt:19)
-  → Rime JNI → libyuyanime.so                        (inputmethod/core/Rime.kt:8)
+  → Rime JNI → libwhaleime.so                        (inputmethod/core/Rime.kt:8)
   → DictDecoder.candidatesLiveData                   (service/DictDecoder.kt:10)
   → InputView.onCandidateChanged → candidate bar / CandidatesContainer
   → ImeService.commitText / setComposingText         (service/ImeService.kt:274)
@@ -102,10 +102,10 @@ Preferences use a declarative wrapper instead of raw `SharedPreferences`:
 
 ### Native engine constraints
 
-`Rime.kt` loads `libyuyanime.so` from `yuyansdk/libs/<abi>`. The precompiled library is closed-source and, per `yuyansdk/README.md`, validates the host application package name in unlicensed builds. Changing `applicationId`/package name will cause engine initialization failures unless a licensed library is supplied. Do not replace the `.so` files as part of normal app changes.
+`Rime.kt` loads `libwhaleime.so` from `whalesdk/libs/<abi>`. The precompiled library is closed-source and, per `whalesdk/README.md`, validates the host application package name in unlicensed builds. Changing `applicationId`/package name will cause engine initialization failures unless a licensed library is supplied. Do not replace the `.so` files as part of normal app changes.
 
 ## Package conventions
 
-- `com.yuyan` — application shell only.
-- `com.yuyan.imemodule` — SDK Android layer; resource IDs come from `com.yuyan.imemodule.R`, even when running inside the `app` module.
-- `com.yuyan.inputmethod` — engine-facing code; UI classes should not touch `Rime` JNI directly.
+- `com.whale` — application shell only.
+- `com.whale.imemodule` — SDK Android layer; resource IDs come from `com.whale.imemodule.R`, even when running inside the `app` module.
+- `com.whale.inputmethod` — engine-facing code; UI classes should not touch `Rime` JNI directly.
