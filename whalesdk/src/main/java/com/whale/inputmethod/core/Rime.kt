@@ -32,7 +32,9 @@ class Rime(fullCheck: Boolean) {
         }
 
         fun startup(context: Context, fullCheck: Boolean) {
-            startupRime(context, CustomConstant.RIME_DICT_PATH, CustomConstant.RIME_DICT_PATH, fullCheck)
+            // shared 只读（rime-v<N> 预编译词典），user 可写（userdb/部署产物），分离后
+            // 每次启动 maintenance 只扫 user 目录，不再对 112MB 共享词库做全量校验
+            startupRime(context, CustomConstant.RIME_SHARED_PATH, CustomConstant.RIME_USER_PATH, fullCheck)
             updateContext()
         }
 
