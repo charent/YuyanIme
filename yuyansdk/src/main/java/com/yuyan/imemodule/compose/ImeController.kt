@@ -132,7 +132,8 @@ class ImeController(val service: ImeService) {
             KeyboardManager.KeyboardType.LX17,
             KeyboardManager.KeyboardType.NUMBER,
             KeyboardManager.KeyboardType.TEXTEDIT,
-            KeyboardManager.KeyboardType.HANDWRITING -> true
+            KeyboardManager.KeyboardType.HANDWRITING,
+            KeyboardManager.KeyboardType.STROKE -> true
             else -> false
         }
 

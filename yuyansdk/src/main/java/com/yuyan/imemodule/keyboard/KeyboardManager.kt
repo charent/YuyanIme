@@ -19,7 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
 class KeyboardManager {
 
     enum class KeyboardType {
-        T9, QWERTY, LX17, QWERTYABC, NUMBER, SYMBOL, SETTINGS, HANDWRITING, CANDIDATES, ClipBoard, TEXTEDIT
+        T9, QWERTY, LX17, QWERTYABC, NUMBER, SYMBOL, SETTINGS, HANDWRITING, CANDIDATES, ClipBoard, TEXTEDIT, STROKE
     }
 
     private val _keyboardType = MutableStateFlow<KeyboardType?>(null)
@@ -42,6 +42,7 @@ class KeyboardManager {
             0x3000 -> if (HWEngine.isAvailable) KeyboardType.HANDWRITING else KeyboardType.QWERTY
             0x5000 -> KeyboardType.NUMBER
             0x6000 -> KeyboardType.LX17
+            0x7000 -> KeyboardType.STROKE
             0x8000 -> KeyboardType.TEXTEDIT
             else -> KeyboardType.T9
         }
@@ -57,11 +58,7 @@ class KeyboardManager {
 
     /** 当前是否停留在「可以输入字符」的键盘上（符号/设置/候选/剪贴板都不算） */
     val isInputKeyboard: Boolean
-        get() = when (currentType) {
-            KeyboardType.SYMBOL, KeyboardType.SETTINGS, KeyboardType.CANDIDATES,
-            KeyboardType.ClipBoard, null -> false
-            else -> true
-        }
+        get() = currentType.isInputKeyboardType()
 
     companion object {
         private var mInstance: KeyboardManager? = null
@@ -74,4 +71,20 @@ class KeyboardManager {
                 return mInstance!!
             }
     }
+}
+
+/**
+ * 与 [KeyboardManager.isInputKeyboard] 同口径，接收可空类型，
+ * 便于直接消费 Compose 侧的 `StateFlow<KeyboardType?>` 参数（保证可重组）。
+ */
+fun KeyboardManager.KeyboardType?.isInputKeyboardType(): Boolean = when (this) {
+    KeyboardManager.KeyboardType.T9,
+    KeyboardManager.KeyboardType.QWERTY,
+    KeyboardManager.KeyboardType.QWERTYABC,
+    KeyboardManager.KeyboardType.LX17,
+    KeyboardManager.KeyboardType.NUMBER,
+    KeyboardManager.KeyboardType.TEXTEDIT,
+    KeyboardManager.KeyboardType.HANDWRITING,
+    KeyboardManager.KeyboardType.STROKE -> true
+    else -> false
 }

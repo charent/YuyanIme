@@ -686,5 +686,6 @@ private fun KeyboardManager.KeyboardType.toSkbValue(): Int = when (this) {
     KeyboardManager.KeyboardType.LX17 -> InputModeSwitcher.MASK_SKB_LAYOUT_LX17
     KeyboardManager.KeyboardType.TEXTEDIT -> InputModeSwitcher.MASK_SKB_LAYOUT_TEXTEDIT
     KeyboardManager.KeyboardType.HANDWRITING -> InputModeSwitcher.MASK_SKB_LAYOUT_HANDWRITING
+    KeyboardManager.KeyboardType.STROKE -> InputModeSwitcher.MASK_SKB_LAYOUT_STROKE
     else -> AppPrefs.getInstance().internal.inputDefaultMode.getValue() and InputModeSwitcher.MASK_SKB_LAYOUT
 }
