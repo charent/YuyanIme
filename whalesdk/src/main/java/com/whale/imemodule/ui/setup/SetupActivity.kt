@@ -105,14 +105,12 @@ class SetupActivity : ComponentActivity() {
     }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                getText(R.string.setup_channel),
-                NotificationManager.IMPORTANCE_HIGH,
-            ).apply { description = CHANNEL_ID }
-            notificationManager.createNotificationChannel(channel)
-        }
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            getText(R.string.setup_channel),
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply { description = CHANNEL_ID }
+        notificationManager.createNotificationChannel(channel)
     }
 
     companion object {

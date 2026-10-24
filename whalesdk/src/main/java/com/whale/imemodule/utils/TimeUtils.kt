@@ -1,6 +1,5 @@
 package com.whale.imemodule.utils
 
-import android.os.Build
 import java.text.SimpleDateFormat
 import java.time.LocalDate
 import java.time.LocalTime
@@ -20,35 +19,31 @@ object TimeUtils {
 
     fun getData(day:String = ""):List<String> {
         val data = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (day.isNotBlank()) {
-                val weeks = arrayOf("一", "二", "三", "四", "五", "六", "日")
-                val diffDays = diffDaysPreset[day] ?: 0
-                val today = if (diffDays > 0) LocalDate.now().plusDays(diffDays.toLong()) else LocalDate.now().minusDays(abs(diffDays.toLong()))
-                val dayOfMonth = today.dayOfMonth
-                val month = today.monthValue
-                val dayOfWeek = weeks[today.dayOfWeek.value - 1]
-                data.add("(${month}月${dayOfMonth}日周$dayOfWeek)")
-                val formatter = DateTimeFormatter.ofPattern("MMdd")
-                val dataMMdd = today.format(formatter).toInt()
-                val gregorianFestival = daysGregorianFestivalPreset[dataMMdd]
-                if (gregorianFestival?.isNotEmpty() == true) data.addAll(gregorianFestival)
-            } else {
-                val today = LocalDate.now()
-                val dayOfMonth = today.dayOfMonth
-                val month = today.monthValue
-                data.add("${month}月${dayOfMonth}日")
-            }
+        if (day.isNotBlank()) {
+            val weeks = arrayOf("一", "二", "三", "四", "五", "六", "日")
+            val diffDays = diffDaysPreset[day] ?: 0
+            val today = if (diffDays > 0) LocalDate.now().plusDays(diffDays.toLong()) else LocalDate.now().minusDays(abs(diffDays.toLong()))
+            val dayOfMonth = today.dayOfMonth
+            val month = today.monthValue
+            val dayOfWeek = weeks[today.dayOfWeek.value - 1]
+            data.add("(${month}月${dayOfMonth}日周$dayOfWeek)")
+            val formatter = DateTimeFormatter.ofPattern("MMdd")
+            val dataMMdd = today.format(formatter).toInt()
+            val gregorianFestival = daysGregorianFestivalPreset[dataMMdd]
+            if (gregorianFestival?.isNotEmpty() == true) data.addAll(gregorianFestival)
+        } else {
+            val today = LocalDate.now()
+            val dayOfMonth = today.dayOfMonth
+            val month = today.monthValue
+            data.add("${month}月${dayOfMonth}日")
         }
         return data
     }
 
     fun getTime():List<String> {
         val data = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val currentTime =  LocalTime.now()
-            data.add("${currentTime.hour}:${currentTime.minute}")
-        }
+        val currentTime =  LocalTime.now()
+        data.add("${currentTime.hour}:${currentTime.minute}")
         return data
     }
 

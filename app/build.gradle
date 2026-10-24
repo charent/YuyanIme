@@ -8,7 +8,7 @@ android {
     namespace 'com.whale'
     defaultConfig {
         applicationId "com.whale.pinyin"
-        minSdk 23
+        minSdk 33
         targetSdk 36
         versionCode Integer.valueOf(versionCodeDate())
         versionName versionNameDate()

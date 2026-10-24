@@ -1,7 +1,6 @@
 package com.whale.imemodule.prefs
 
 import android.media.AudioManager
-import android.os.Build
 import android.os.VibrationEffect
 import android.view.HapticFeedbackConstants
 import android.view.View
@@ -15,7 +14,7 @@ object InputFeedbacks {
     private val vibrationAmplitude by AppPrefs.getInstance().internal.vibrationAmplitude
 
     private val vibrator = Launcher.instance.context.vibrator
-    private val hasAmplitudeControl = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && vibrator.hasAmplitudeControl()
+    private val hasAmplitudeControl = vibrator.hasAmplitudeControl()
     private val audioManager = Launcher.instance.context.audioManager
 
     fun hapticFeedback(view: View) {

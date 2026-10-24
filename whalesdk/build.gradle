@@ -31,7 +31,7 @@ android {
     compileSdk 36
     namespace 'com.whale.imemodule'
     defaultConfig {
-        minSdk 23
+        minSdk 33
         targetSdk 35
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
         ndk {

@@ -1,8 +1,6 @@
 package com.whale.imemodule.compose
 
 import android.content.Context
-import android.graphics.Color
-import android.os.Build
 import android.util.AttributeSet
 import android.view.View
 import android.view.ViewGroup
@@ -112,16 +110,11 @@ class ImeComposeRoot @JvmOverloads constructor(
     private fun setupImeWindowEdgeToEdge() {
         val win = service.window?.window ?: return
         WindowCompat.setDecorFitsSystemWindows(win, false)
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            @Suppress("DEPRECATION")
-            win.navigationBarColor = Color.TRANSPARENT
-        } else {
-            win.insetsController?.apply {
-                hide(WindowInsets.Type.navigationBars())
-                systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            }
+        win.insetsController?.apply {
+            hide(WindowInsets.Type.navigationBars())
+            systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) win.isNavigationBarContrastEnforced = false
+        win.isNavigationBarContrastEnforced = false
     }
 
     /**

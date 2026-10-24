@@ -452,7 +452,6 @@ class ImeService : InputMethodService() {
      * 避免出现两个切换入口（收起键盘按钮保留，不影响返回）。
      */
     private fun hideSystemImeSwitchButton() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         val decor = window?.window?.decorView as? ViewGroup ?: return
         val hide: () -> Unit = {
             val switcherId = resources.getIdentifier("ime_switch_button", "id", "android")

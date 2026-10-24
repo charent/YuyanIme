@@ -3,7 +3,6 @@ package com.whale.imemodule.prefs
 
 import android.content.SharedPreferences
 import android.os.Build
-import androidx.annotation.RequiresApi
 import androidx.core.content.edit
 import com.whale.imemodule.R
 import com.whale.imemodule.application.Launcher
@@ -380,7 +379,6 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
             }
         }
 
-    @RequiresApi(Build.VERSION_CODES.N)
     fun syncToDeviceEncryptedStorage() {
         val ctx = Launcher.instance.context.createDeviceProtectedStorageContext()
         val sp = ctx.defaultSharedPreferences()

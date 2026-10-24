@@ -69,10 +69,8 @@ object AppUtil {
 
     fun showRestartNotification(ctx: Context) {
         val channelId = "app-restart"
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(channelId, ctx.getText(R.string.restart_channel), NotificationManager.IMPORTANCE_HIGH).apply { description = channelId }
-            ctx.notificationManager.createNotificationChannel(channel)
-        }
+        val channel = NotificationChannel(channelId, ctx.getText(R.string.restart_channel), NotificationManager.IMPORTANCE_HIGH).apply { description = channelId }
+        ctx.notificationManager.createNotificationChannel(channel)
         NotificationCompat.Builder(ctx, channelId)
             .setSmallIcon(R.drawable.ic_sdk_launcher_transparent)
             .setContentTitle(ctx.getText(R.string.app_name))
