@@ -5,11 +5,11 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Color
 import android.graphics.Rect
 import android.os.Bundle
 import android.os.Parcelable
 import android.webkit.MimeTypeMap
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -46,6 +46,8 @@ import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.yuyan.imemodule.R
+import com.yuyan.imemodule.compose.crop.CropContract
+import com.yuyan.imemodule.compose.crop.CropRequest
 import com.yuyan.imemodule.compose.settings.KeyboardPreview
 import com.yuyan.imemodule.compose.settings.SettingsPage
 import com.yuyan.imemodule.compose.settings.SettingsRow
@@ -55,24 +57,19 @@ import com.yuyan.imemodule.compose.settings.string
 import com.yuyan.imemodule.data.theme.Theme
 import com.yuyan.imemodule.data.theme.ThemeFilesManager
 import com.yuyan.imemodule.data.theme.ThemePreset
-import com.yuyan.imemodule.libs.cropper.CropImageContract
-import com.yuyan.imemodule.libs.cropper.CropImageContractOptions
-import com.yuyan.imemodule.libs.cropper.CropImageOptions
-import com.yuyan.imemodule.libs.cropper.CropImageView
-import com.yuyan.imemodule.libs.cropper.parcelable
 import com.yuyan.imemodule.singleton.EnvironmentSingleton
+import com.yuyan.imemodule.utils.parcelable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.parcelize.Parcelize
-import splitties.resources.styledColor
 import java.io.File
 
 /**
  * 自定义主题编辑（背景图裁剪 + 亮度 + 明暗键帽）。
  *
- * 方案 D4：裁剪流程（`CropImageContract` + `CropImageView`）原样保留，
- * 只有外层界面与预览改为 Compose —— 预览用 [KeyboardPreview]，与键盘真实渲染同源。
+ * 裁剪流程走 Compose 的 [CropContract]（`compose/crop/`），与设置页同一套 Material 3
+ * 主题；预览用 [KeyboardPreview]，与键盘真实渲染同源。
  */
 class CustomThemeActivity : ComponentActivity() {
 
@@ -230,30 +227,6 @@ class CustomThemeViewModel : ViewModel() {
 
     fun srcFile(): File? = srcImageFile
 
-    fun cropOptions(context: Context, w: Int, h: Int): CropImageOptions = CropImageOptions(
-        initialCropWindowRectangle = cropRect,
-        guidelines = CropImageView.Guidelines.ON_TOUCH,
-        borderLineColor = Color.WHITE,
-        borderLineThickness = 1f,
-        borderCornerColor = Color.WHITE,
-        borderCornerOffset = 0f,
-        imageSourceIncludeGallery = true,
-        imageSourceIncludeCamera = false,
-        aspectRatioX = w,
-        aspectRatioY = h,
-        fixAspectRatio = true,
-        customOutputUri = tempImageFile?.toUri(),
-        outputCompressFormat = Bitmap.CompressFormat.PNG,
-        cropMenuCropButtonIcon = R.drawable.ic_menu_done,
-        showProgressBar = true,
-        progressBarColor = context.styledColor(android.R.attr.colorAccent),
-        activityMenuIconColor = context.styledColor(android.R.attr.colorControlNormal),
-        activityMenuTextColor = context.styledColor(android.R.attr.colorForeground),
-        activityBackgroundColor = context.styledColor(android.R.attr.colorBackground),
-        toolbarColor = context.styledColor(android.R.attr.colorPrimary),
-        toolbarBackButtonColor = context.styledColor(android.R.attr.colorControlNormal),
-    )
-
     /** 保存：写裁剪图/原图，产出回传结果 */
     fun buildResult(): CustomThemeActivity.BackgroundResult? {
         val current = theme ?: return null
@@ -318,34 +291,51 @@ private fun CustomThemeScreen(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var croppedOnce by remember { mutableStateOf(!viewModel.newCreated) }
 
-    val cropLauncher = rememberLauncherForActivityResult(CropImageContract()) { result ->
-        if (!result.isSuccessful) {
+    val cropLauncher = rememberLauncherForActivityResult(CropContract()) { result ->
+        if (result == null) {
             // 新建时取消裁剪 = 放弃整个编辑；编辑已有主题时取消只是不改背景
             if (viewModel.newCreated) onCancel()
             return@rememberLauncherForActivityResult
         }
-        val bitmap = result.getBitmap(context)?.let {
-            Bitmap.createScaledBitmap(it, env.skbWidth, env.inputAreaHeight, true)
+        scope.launch {
+            // 裁剪执行器已输出 skbWidth × inputAreaHeight 的精确尺寸，这里只解码
+            val bitmap = withContext(Dispatchers.IO) {
+                context.contentResolver.openInputStream(result.outputUri)?.use {
+                    BitmapFactory.decodeStream(it)
+                }
+            }
+            val extension = MimeTypeMap.getSingleton()
+                .getExtensionFromMimeType(context.contentResolver.getType(result.originalUri))
+            val buffer = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(result.originalUri)?.use { it.readBytes() }
+                }.getOrNull()
+            }
+            viewModel.onCropped(bitmap, result.cropRect, extension, buffer)
+            croppedOnce = true
         }
-        val extension = result.originalUri?.let { uri ->
-            MimeTypeMap.getSingleton().getExtensionFromMimeType(context.contentResolver.getType(uri))
-        }
-        val buffer = result.originalUri?.let { uri ->
-            runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-        }
-        viewModel.onCropped(bitmap, result.cropRect, extension, buffer)
-        croppedOnce = true
     }
 
     fun launchCrop() {
+        val source = viewModel.srcFile()?.takeIf { it.exists() }
+        if (source == null) {
+            // 旧裁剪库此时会弹相册/拍照选择器，本流程不可达（选图在进入前已完成），
+            // 现按取消处理并在新建态下放弃整个编辑（方案 §6.1）
+            Toast.makeText(context, R.string.crop_source_missing, Toast.LENGTH_SHORT).show()
+            if (viewModel.newCreated) onCancel()
+            return
+        }
         scope.launch {
             val temp = withContext(Dispatchers.IO) {
                 viewModel.prepareTempFile(context.cacheDir)
             }
             cropLauncher.launch(
-                CropImageContractOptions(
-                    uri = viewModel.srcFile()?.takeIf { it.exists() }?.toUri(),
-                    cropImageOptions = viewModel.cropOptions(context, env.skbWidth, env.inputAreaHeight),
+                CropRequest(
+                    sourceUri = source.toUri(),
+                    aspectW = env.skbWidth,
+                    aspectH = env.inputAreaHeight,
+                    initialRect = viewModel.cropRect,
+                    outputUri = temp.toUri(),
                 )
             )
         }

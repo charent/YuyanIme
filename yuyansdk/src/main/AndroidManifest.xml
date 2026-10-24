@@ -36,18 +36,10 @@
             android:exported="false"
             android:label="@string/edit_theme" />
         <activity
-            android:name=".libs.cropper.CropImageActivity"
+            android:name=".compose.crop.CropActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:exported="false"
-            android:theme="@style/Theme.CropActivityTheme"/>
-        <provider
-            android:name=".libs.cropper.CropFileProvider"
-            android:authorities="${applicationId}.cropper.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/cropper_library_file_paths"/>
-        </provider>
+            android:theme="@style/Theme.AppTheme" />
     </application>
 
 </manifest>

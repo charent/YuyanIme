@@ -245,15 +245,11 @@
     <string name="half_width_symbols_tips_only_used">仅常用</string>
     <string name="half_width_symbols_tips_none">不显示</string>
 
-    <string name="ic_rotate_left_24">逆时针旋转</string>
-    <string name="ic_rotate_right_24">旋转</string>
-    <string name="crop_image_menu_crop">裁剪</string>
-    <string name="ic_flip_24">翻转</string>
-    <string name="ic_flip_24_horizontally">水平翻转</string>
-    <string name="ic_flip_24_vertically">垂直翻转</string>
-    <string name="pick_image_chooser_title">选择来源</string>
-    <string name="pick_image_camera">相机</string>
-    <string name="pick_image_gallery">图库</string>
+    <string name="crop_confirm">裁剪</string>
+    <string name="crop_rotate">旋转</string>
+    <string name="crop_load_failed">无法读取图片</string>
+    <string name="crop_save_failed">保存裁剪结果失败</string>
+    <string name="crop_source_missing">图片不存在，请重新选择</string>
 
     <string name="x_recycler_data_empty">暂时没有数据</string>
     <string name="x_recycler_more_not">没有更多数据啦</string>
