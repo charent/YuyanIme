@@ -88,7 +88,12 @@ fun KeyGrid(
 ) {
     val theme = LocalImeTheme.current
     val env = remember { EnvironmentSingleton.instance }
-    val keys = remember(keyboard) { keyboard.mKeyRows.flatten() }
+    // LEFT_SYMBOL 只是侧边栏的占位键（旧实现的「站位」键，由 T9PrefixColumn 覆盖绘制）。
+    // 这里不把它当普通键帽：若照常绘制，会和侧边栏叠出两层键底色，把相邻按键啃出毛边。
+    // 注意 controller 内部的 keys 必须用同一份过滤结果，否则 pressState 索引会错位。
+    val keys = remember(keyboard) {
+        keyboard.mKeyRows.flatten().filterNot { it.code == InputModeSwitcher.USER_KEYCODE_LEFT_SYMBOL }
+    }
     val textMeasurer = rememberTextMeasurer(cacheSize = 64)
 
     val pressState = remember(keyboard) { mutableStateOf(-1) }
@@ -266,7 +271,10 @@ private class KeyTouchController(
     var addPhrases: Boolean = false
 
     private val handler = Handler(Looper.getMainLooper())
+
+    // 与组合层的 keys 保持同一过滤（见 KeyGrid 内注释）：LEFT_SYMBOL 是侧边栏占位键
     private val keys = keyboard.mKeyRows.flatten()
+        .filterNot { it.code == InputModeSwitcher.USER_KEYCODE_LEFT_SYMBOL }
 
     private var currentKey: SoftKey? = null
     private var longPressed = false

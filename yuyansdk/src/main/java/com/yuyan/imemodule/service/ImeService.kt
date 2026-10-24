@@ -44,6 +44,9 @@ class ImeService : InputMethodService() {
     private var isHardwareKeyboard = false
     private var showVirtualKeyboardOnPhysicalKeyboard = false
 
+    /** 当前编辑框信息：判断单行/多行用（上/下方向键是否还有意义） */
+    private var currentEditorInfo: EditorInfo? = null
+
     /** 软键盘根视图：服务存活期间复用，旋屏/换输入框只重排不重建组合 */
     private var composeRoot: ImeComposeRoot? = null
 
@@ -128,6 +131,7 @@ class ImeService : InputMethodService() {
 
     override fun onStartInput(editorInfo: EditorInfo?, restarting: Boolean) {
         super.onStartInput(editorInfo, restarting)
+        currentEditorInfo = editorInfo
         if (editorInfo != null) {
             YuyanEmojiCompat.setEditorInfo(editorInfo)
             InputModeSwitcher.requestInputWithSkb(editorInfo)
@@ -180,16 +184,7 @@ class ImeService : InputMethodService() {
             KeyboardManager.instance.clearKeyboard()
             KeyboardManager.instance.switchKeyboard()
             // Compose 根的高度是显式指定的，旋屏/改比例后需要重算，否则沿用旧方向的高度
-            composeRoot?.let { root ->
-                val target = root.preferredKeyboardHeight()
-                root.layoutParams?.let { lp ->
-                    if (target > 0 && lp.height != target) {
-                        lp.height = target
-                        root.layoutParams = lp
-                    }
-                }
-                root.requestLayout()
-            }
+            composeRoot?.applyPreferredHeight()
         }
         onSystemDarkModeChange(newConfig.isDarkMode())
     }
@@ -251,6 +246,14 @@ class ImeService : InputMethodService() {
         (view.parent as? ViewGroup)?.removeView(view)
         super.setCandidatesView(view)
     }
+
+    /** 当前编辑框是否多行：单行框上下没有可移动的行，方向键应被吞掉而不是交给焦点导航 */
+    val isMultilineEditor: Boolean
+        get() {
+            val info = currentEditorInfo ?: return false
+            return (info.inputType and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT &&
+                    (info.inputType and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0
+        }
 
     override fun onEvaluateFullscreenMode(): Boolean = false //修复横屏之后输入框遮挡问题
 

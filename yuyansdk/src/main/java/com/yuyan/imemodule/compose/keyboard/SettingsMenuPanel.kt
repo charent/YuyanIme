@@ -29,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -73,18 +74,26 @@ fun SettingsMenuPanel(uiState: ImeUiState, controller: ImeController) {
 private fun MenuGridPage(controller: ImeController) {
     val theme = LocalImeTheme.current
     val env = remember { EnvironmentSingleton.instance }
+    val density = LocalDensity.current
     val textColor = Color(theme.keyTextColor)
     var items by remember { mutableStateOf(loadMenuItems()) }
 
+    // 列数 = 键盘宽度能放下几个 100dp 的格子（旧 `skbWidth / dp(100)`）。
+    // 迁移时漏了 dp→px 换算，直接 `skbWidth / 100` 在像素域相除得出 10+ 列，
+    // 每格只剩 ~40dp，图标标签全被截成「xx…」。
+    val columnCount = remember(env.skbWidth, density) {
+        ((env.skbWidth / with(density) { 100.dp.toPx() }).toInt()).coerceAtLeast(2)
+    }
+
     LazyVerticalGrid(
-        columns = GridCells.Fixed((env.skbWidth / 100).coerceAtLeast(3)),
+        columns = GridCells.Fixed(columnCount),
         modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 10.dp),
     ) {
         items(items) { item ->
             Column(
                 modifier = Modifier
-                    .padding(4.dp)
+                    .padding(horizontal = 6.dp, vertical = 12.dp)
                     .clickable {
                         DevicesUtils.tryPlayKeyDown()
                         DevicesUtils.tryVibrate()
@@ -96,16 +105,16 @@ private fun MenuGridPage(controller: ImeController) {
                     painter = painterResource(item.funImgResource),
                     contentDescription = item.funName,
                     colorFilter = ColorFilter.tint(textColor),
-                    modifier = Modifier.size(34.dp),
+                    modifier = Modifier.size(38.dp),
                 )
                 Text(
                     text = item.funName,
                     color = textColor,
-                    style = TextStyle(fontSize = 11.sp),
+                    style = TextStyle(fontSize = 12.sp),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 4.dp),
+                    modifier = Modifier.padding(top = 6.dp),
                 )
             }
         }

@@ -75,21 +75,25 @@ fun SymbolPanel(uiState: ImeUiState, controller: ImeController) {
     val density = LocalDensity.current
     val textColor = Color(theme.keyTextColor)
 
-    val pages: List<Map.Entry<Int, List<String>>> = remember(uiState.symbolMode) {
-        val data = when (uiState.symbolMode) {
-            SymbolMode.Emoticon -> EmojiconData.emoticonData
-            SymbolMode.Emojicon -> EmojiconData.emojiconData
-            else -> EmojiconData.symbolData
-        }
-        data.entries.toList()
-    }
+    // 分页数据：第一页「最近使用」按模式从数据库装载，为空时退回第一个非空分类
+    // （旧 SymbolPagerAdapter.onBindViewHolder 同逻辑；迁移时丢了这一步导致首屏空白）。
+    // 提交符号/表情后整体重载：分类数不变、pager 停留当前页，仅最近使用页内容刷新。
+    var pages by remember(uiState.symbolMode) { mutableStateOf(loadPages(uiState.symbolMode)) }
     if (pages.isEmpty()) return
+    val refreshPages = { pages = loadPages(uiState.symbolMode) }
 
     val pagerState = rememberPagerState(
         initialPage = uiState.symbolPage.coerceIn(0, pages.lastIndex),
         pageCount = { pages.size },
     )
+    // 滑动/程序翻页落定 → 记录当前页
     LaunchedEffect(pagerState.currentPage) { controller.setSymbolPage(pagerState.currentPage) }
+    // 点底部分类图标 → 切页。旧实现走 ViewPager2.setCurrentItem；迁移时只剩
+    // setSymbolPage 改状态，pager 从不响应，表现为「分类点了没反应」。
+    LaunchedEffect(uiState.symbolPage) {
+        val target = uiState.symbolPage.coerceIn(0, pages.lastIndex)
+        if (pagerState.currentPage != target) pagerState.animateScrollToPage(target)
+    }
 
     var locked by remember(uiState.symbolMode) { mutableStateOf(uiState.symbolMode != SymbolMode.Symbol) }
     var skinTone by remember { mutableStateOf<Pair<String, List<String>>?>(null) }
@@ -97,7 +101,7 @@ fun SymbolPanel(uiState: ImeUiState, controller: ImeController) {
     Column(modifier = Modifier.fillMaxSize()) {
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
-                val values = pages[page].value
+                val values = pages[page].second
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = 38.dp),
                     modifier = Modifier.fillMaxSize(),
@@ -113,6 +117,7 @@ fun SymbolPanel(uiState: ImeUiState, controller: ImeController) {
                                         DevicesUtils.tryPlayKeyDown()
                                         DevicesUtils.tryVibrate()
                                         commitSymbol(controller, uiState.symbolMode, symbol)
+                                        refreshPages()
                                         if (!locked) controller.switchToInputKeyboard()
                                     },
                                     onLongClick = {
@@ -121,6 +126,7 @@ fun SymbolPanel(uiState: ImeUiState, controller: ImeController) {
                                         if (variants == null) {
                                             // 不支持肤色：长按等同单击
                                             commitSymbol(controller, uiState.symbolMode, symbol)
+                                            refreshPages()
                                             if (!locked) controller.switchToInputKeyboard()
                                         } else {
                                             DevicesUtils.tryPlayKeyDown()
@@ -160,6 +166,7 @@ fun SymbolPanel(uiState: ImeUiState, controller: ImeController) {
                             modifier = Modifier.clickable {
                                 skinTone = null
                                 commitEmoji(controller, option)
+                                refreshPages()
                             }.padding(6.dp),
                         )
                     }
@@ -172,7 +179,7 @@ fun SymbolPanel(uiState: ImeUiState, controller: ImeController) {
             modifier = Modifier.fillMaxWidth().height(36.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            pages.forEachIndexed { index, entry ->
+            pages.forEachIndexed { index, page ->
                 val selected = pagerState.currentPage == index
                 Box(
                     modifier = Modifier
@@ -188,7 +195,7 @@ fun SymbolPanel(uiState: ImeUiState, controller: ImeController) {
                     contentAlignment = Alignment.Center,
                 ) {
                     Image(
-                        painter = painterResource(entry.key),
+                        painter = painterResource(page.first),
                         contentDescription = null,
                         colorFilter = ColorFilter.tint(textColor),
                         modifier = Modifier.size(20.dp),
@@ -303,3 +310,36 @@ private fun commitEmoji(controller: ImeController, emoji: String) {
     }
     controller.dispatcher.responseKeyEvent(SoftKey(label = emoji))
 }
+
+/** 组装分页数据；「最近使用」页（recents）实时读库 */
+private fun loadPages(mode: SymbolMode): List<Pair<Int, List<String>>> {
+    val data = when (mode) {
+        SymbolMode.Emoticon -> EmojiconData.emoticonData
+        SymbolMode.Emojicon -> EmojiconData.emojiconData
+        else -> EmojiconData.symbolData
+    }
+    return data.entries.map { (key, values) ->
+        if (key == RECENTS_KEY) key to loadRecents(mode, data)
+        else key to values
+    }
+}
+
+/**
+ * 最近使用：符号键盘取全部常用符号，表情/颜文字键盘取 emoji 记录；
+ * 为空时退回一个非空分类（表情键走常用表情分类，旧 `defaultEmojiData` 同逻辑）。
+ */
+private fun loadRecents(mode: SymbolMode, data: Map<Int, List<String>>): List<String> {
+    val recent = runCatching {
+        if (mode == SymbolMode.Symbol) DataBaseKT.instance.usedSymbolDao().getAllUsedSymbol().map { it.symbol }
+        else DataBaseKT.instance.usedSymbolDao().getAllSymbolEmoji().map { it.symbol }
+    }.getOrDefault(emptyList())
+    if (recent.isNotEmpty()) return recent
+    return if (mode == SymbolMode.Symbol) {
+        data.entries.firstOrNull { it.key != RECENTS_KEY }?.value
+    } else {
+        data[R.drawable.icon_emojibar_smileys]
+            ?: data.entries.firstOrNull { it.key != RECENTS_KEY && it.value.isNotEmpty() }?.value
+    } ?: emptyList()
+}
+
+private val RECENTS_KEY = R.drawable.icon_emojibar_recents

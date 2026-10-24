@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
@@ -102,11 +103,25 @@ fun ImeApp() {
                 com.yuyan.imemodule.prefs.behavior.KeyboardOneHandedMod.LEFT
         val floatMode = env.keyboardModeFloat
 
-        val background = rememberKeyboardBackground(
+        // 主题背景按目标区域**精确渲染**（旧 mSkbRoot.background 的 BitmapDrawable
+        // 语义：按视图边界拉伸铺满）：
+        // - 非悬浮：铺满整个 IME 窗口（候选区+键区+间隔+全面屏条+导航栏占位）。
+        //   若按 inputAreaHeight 渲染再 Fit 居中，背景会整体上移——候选栏压到键盘
+        //   首行上方、窗口底部露出一条未覆盖的底色（地球/剪贴板图标异色）。
+        // - 悬浮：只铺键盘卡片自身（skbWidth × 键区 + 移动条），窗口四周保持透明。
+        // 尺寸传 0 表示当前模式用不到，渲染函数会直接返回 null，避免两张大图都常驻。
+        val keyBorder = ThemeManager.prefs.keyBorder.getValue()
+        val windowBackground = rememberKeyboardBackground(
             theme = theme,
-            width = env.inputAreaWidth,
-            height = env.inputAreaHeight,
-            keyBorder = ThemeManager.prefs.keyBorder.getValue(),
+            width = if (floatMode) 0 else env.mScreenWidth,
+            height = if (floatMode) 0 else env.skbAreaHeight,
+            keyBorder = keyBorder,
+        )
+        val floatCardBackground = rememberKeyboardBackground(
+            theme = theme,
+            width = if (floatMode) env.skbWidth else 0,
+            height = if (floatMode) env.inputAreaHeight + env.heightForKeyboardMove else 0,
+            keyBorder = keyBorder,
         )
 
         val content: @Composable () -> Unit = {
@@ -166,52 +181,56 @@ fun ImeApp() {
         }
 
         Box(modifier = Modifier.fillMaxSize()) {
-            // 键盘背景：优先主题背景图，其次纯色
-            if (background != null) {
-                Image(
-                    bitmap = background,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            } else {
-                Box(Modifier.fillMaxSize().background(Color(theme.keyboardColor)))
-            }
-
             if (floatMode) {
-                // 悬浮模式：内容贴右下角，位置由拖动条改写 internal 的 padding 偏好
+                // 悬浮模式：窗口透明，主题背景只铺在键盘卡片后面；内容贴右下角，
+                // 位置由拖动条改写 internal 的 padding 偏好
                 val floatBottom = floatBottomPadding(env.isLandscape)
                 val floatRight = floatRightPadding(env.isLandscape)
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
+                        .align(Alignment.BottomEnd)
                         .padding(
                             bottom = with(density) { floatBottom.toDp() },
                             end = with(density) { floatRight.toDp() },
                         ),
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .width(with(density) { env.skbWidth.toDp() }),
-                    ) {
-                        content()
-                        FloatMoveBar(controller)
+                    Box {
+                        ThemeBackground(
+                            theme = theme,
+                            bitmap = floatCardBackground,
+                            modifier = Modifier.matchParentSize(),
+                        )
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .width(with(density) { env.skbWidth.toDp() }),
+                        ) {
+                            content()
+                            FloatMoveBar(controller)
+                        }
                     }
                 }
-            } else if (oneHanded && !oneHandedLeft) {
-                Row(Modifier.fillMaxSize()) {
-                    OneHandPlaceholder(controller, leftSide = true)
-                    Box(Modifier.weight(1f)) { content() }
-                }
-            } else if (oneHanded) {
-                Row(Modifier.fillMaxSize()) {
-                    Box(Modifier.weight(1f)) { content() }
-                    OneHandPlaceholder(controller, leftSide = false)
-                }
             } else {
-                Column(Modifier.fillMaxSize()) {
-                    Box(Modifier.weight(1f)) { content() }
-                    KeyboardBottomBar(controller)
+                ThemeBackground(
+                    theme = theme,
+                    bitmap = windowBackground,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                if (oneHanded && !oneHandedLeft) {
+                    Row(Modifier.fillMaxSize()) {
+                        OneHandPlaceholder(controller, leftSide = true)
+                        Box(Modifier.weight(1f)) { content() }
+                    }
+                } else if (oneHanded) {
+                    Row(Modifier.fillMaxSize()) {
+                        Box(Modifier.weight(1f)) { content() }
+                        OneHandPlaceholder(controller, leftSide = false)
+                    }
+                } else {
+                    Column(Modifier.fillMaxSize()) {
+                        Box(Modifier.weight(1f)) { content() }
+                        KeyboardBottomBar(controller)
+                    }
                 }
             }
         }
@@ -296,15 +315,21 @@ private fun InputKeyboardArea(
         if (isT9Family || isHandwriting) {
             val holder = keyboard.getKeyByCode(InputModeSwitcher.USER_KEYCODE_LEFT_SYMBOL)
             if (holder != null) {
+                // 位置 = 占位键单元格四边内缩键边距（旧 T9TextContainer.updateKeyboardView
+                // 的 LayoutParams margins），与相邻键帽的间距保持一致
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .offset(
-                            x = with(density) { holder.mLeft.toDp() },
-                            y = with(density) { holder.mTop.toDp() },
+                            x = with(density) { (holder.mLeft + keyboard.keyXMargin).toDp() },
+                            y = with(density) { (holder.mTop + keyboard.keyYMargin).toDp() },
                         )
-                        .width(with(density) { holder.width().toDp() })
-                        .height(with(density) { (holder.mBottom - holder.mTop).toDp() }),
+                        .width(with(density) { (holder.width() - 2 * keyboard.keyXMargin).toDp() })
+                        .height(
+                            with(density) {
+                                (holder.mBottom - holder.mTop - 2 * keyboard.keyYMargin).toDp()
+                            },
+                        ),
                 ) {
                     T9PrefixColumn(
                         numberMode = type == KeyboardManager.KeyboardType.NUMBER,
@@ -362,7 +387,9 @@ private fun KeyboardBottomBar(controller: ImeController) {
     val internal = AppPrefs.getInstance().internal
     val fullDisplay = internal.fullDisplayKeyboardEnable.getValue()
     val bottomPadding = internal.keyboardBottomPadding.getValue()
-    val navbar = env.systemNavbarWindowsBottom
+    // 读 controller.navbarInset（Compose 状态）而不是 env 同名字段：
+    // insets 变化时需要触发重组，普通字段变化不会
+    val navbar = controller.navbarInset
     val barHeight = if (fullDisplay && !env.isLandscape) env.heightForFullDisplayBar else 0
 
     Column(
@@ -482,7 +509,7 @@ private fun OneHandPlaceholder(controller: ImeController, leftSide: Boolean) {
                 modifier = Modifier.size(32.dp).clickable { switchOneHandedSide(controller) },
             )
         }
-        Spacer(Modifier.height(with(density) { env.systemNavbarWindowsBottom.toDp() }))
+        Spacer(Modifier.height(with(density) { controller.navbarInset.toDp() }))
     }
 }
 
@@ -639,6 +666,24 @@ private fun HeightAdjuster(controller: ImeController) {
 // ---------------------------------------------------------------------------
 // 主题背景
 // ---------------------------------------------------------------------------
+
+/**
+ * 主题背景层：位图已按目标区域渲染（拉伸语义，对应旧 BitmapDrawable 铺视图边界），
+ * 这里只负责 1:1 铺放；主题无背景图时退回纯色。
+ */
+@Composable
+private fun ThemeBackground(theme: Theme, bitmap: ImageBitmap?, modifier: Modifier = Modifier) {
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap,
+            contentDescription = null,
+            contentScale = ContentScale.FillBounds,
+            modifier = modifier,
+        )
+    } else {
+        Box(modifier.background(Color(theme.keyboardColor)))
+    }
+}
 
 @Composable
 private fun rememberKeyboardBackground(

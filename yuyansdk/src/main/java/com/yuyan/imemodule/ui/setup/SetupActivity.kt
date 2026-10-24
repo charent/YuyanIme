@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.view.ViewTreeObserver
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -28,6 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -35,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.fromHtml
 import androidx.compose.ui.text.style.TextAlign
@@ -51,6 +54,7 @@ import com.yuyan.imemodule.ui.activity.SettingsActivity
 import com.yuyan.imemodule.utils.InputMethodUtil
 import com.yuyan.imemodule.utils.notificationManager
 import com.yuyan.imemodule.utils.startActivity
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -131,14 +135,34 @@ private fun SetupScreen() {
     val allDone = doneMask.all { it }
     val scope = rememberCoroutineScope()
 
-    // 旧实现用 onWindowFocusChanged / onResume 同步各页完成状态
+    // 完成状态的刷新时机 = 旧实现的 onResume + onWindowFocusChanged：
+    // 从系统「启用输入法」设置页 / 输入法选择器返回后重估。
+    // 注意不能只挂在 ON_RESUME：选择器关闭时系统写回默认输入法可能晚于我们的
+    // resume，表现为「选完回来按钮不变」。这里聚焦恢复时同样触发，并在
+    // LaunchedEffect 里延迟补刷几次兜底。
+    var stateTick by remember { mutableIntStateOf(0) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) doneMask = pages.map { it.isDone() }
+            if (event == Lifecycle.Event.ON_RESUME) stateTick++
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val focusListener = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->
+            if (hasFocus) stateTick++
+        }
+        view.viewTreeObserver.addOnWindowFocusChangeListener(focusListener)
+        onDispose { view.viewTreeObserver.removeOnWindowFocusChangeListener(focusListener) }
+    }
+    LaunchedEffect(stateTick) {
+        if (stateTick == 0) return@LaunchedEffect
+        repeat(4) {
+            doneMask = pages.map { it.isDone() }
+            delay(250)
+        }
     }
 
     // onStart 的三条短路：未同意隐私 → 去设置页；已选输入法 → 关闭；已启用 → 直接到最后一页

@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -176,14 +177,29 @@ private fun CandidateRow(
         }
     }
 
+    // 行高沿用旧 CandidatesBar 的精确值：拼音行 = heightForcomposing、候选行 =
+    // heightForCandidates。若让拼音 Text 用自然高度，其字体行框（含 font padding）
+    // 高于行高，会把候选行挤压缩水，候选字随之被上下裁掉。
+    // 文本都关掉 includeFontPadding（旧 TextView 同款），行框才与行高一致。
     Column(modifier = Modifier.fillMaxSize().padding(start = with(density) { 44.dp })) {
-        if (candidateState.composingText.isNotEmpty()) {
-            Text(
-                text = candidateState.composingText,
-                color = textColor,
-                style = TextStyle(fontSize = env.composingTextSize.sp),
-                modifier = Modifier.padding(horizontal = 10.dp),
-            )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(with(density) { env.heightForcomposing.toDp() }),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            if (candidateState.composingText.isNotEmpty()) {
+                Text(
+                    text = candidateState.composingText,
+                    color = textColor,
+                    style = TextStyle(
+                        fontSize = env.composingTextSize.sp,
+                        platformStyle = PlatformTextStyle(includeFontPadding = false),
+                    ),
+                    maxLines = 1,
+                    modifier = Modifier.padding(horizontal = 10.dp),
+                )
+            }
         }
         Row(
             modifier = Modifier.fillMaxWidth().weight(1f),
@@ -203,14 +219,18 @@ private fun CandidateRow(
                     Text(
                         text = text,
                         color = if (active) accentColor else textColor,
-                        style = TextStyle(fontSize = env.candidateTextSize.sp),
+                        style = TextStyle(
+                            fontSize = env.candidateTextSize.sp,
+                            platformStyle = PlatformTextStyle(includeFontPadding = false),
+                        ),
+                        maxLines = 1,
                         modifier = Modifier
                             .clickable {
                                 DevicesUtils.tryPlayKeyDown()
                                 DevicesUtils.tryVibrate()
                                 controller.dispatcher.chooseAndUpdate(index)
                             }
-                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                            .padding(horizontal = 12.dp),
                     )
                 }
             }

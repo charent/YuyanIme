@@ -548,8 +548,13 @@ class KeyDispatcher(private val controller: ImeController) : IResponseKeyEvent {
         when (keyCode) {
             KeyEvent.KEYCODE_ENTER -> service.sendEnterKeyEvent()
             in KeyEvent.KEYCODE_DPAD_UP..KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                service.sendCombinationKeyEvents(keyCode, shift = hasSelection)
-                if (hasSelectionAll) hasSelectionAll = false
+                // 单行编辑框上下没有可移动的行：吞掉，事件交给宿主会走焦点导航，
+                // 焦点移出输入框就会把当前编辑界面切走（表现为「按上下键退出」）
+                val vertical = keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                if (!vertical || service.isMultilineEditor) {
+                    service.sendCombinationKeyEvents(keyCode, shift = hasSelection)
+                    if (hasSelectionAll) hasSelectionAll = false
+                }
             }
             else -> service.sendCombinationKeyEvents(keyCode)
         }

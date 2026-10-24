@@ -120,7 +120,9 @@ class EnvironmentSingleton private constructor() {
     val skbAreaHeight:Int
         get() = instance.inputAreaHeight + if(!instance.keyboardModeFloat) {
             AppPrefs.getInstance().internal.keyboardBottomPadding.getValue() + instance.systemNavbarWindowsBottom +
-            if(AppPrefs.getInstance().internal.fullDisplayKeyboardEnable.getValue()) instance.heightForFullDisplayBar else 0
+            // 全面屏优化条只在竖屏显示（旧 initView 同规则），横屏若计入会让窗口比内容高
+            if(AppPrefs.getInstance().internal.fullDisplayKeyboardEnable.getValue() && !instance.isLandscape)
+                instance.heightForFullDisplayBar else 0
         } else instance.heightForKeyboardMove
 
     val leftMarginWidth:Int

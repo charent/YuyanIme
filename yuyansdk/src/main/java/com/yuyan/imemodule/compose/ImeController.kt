@@ -23,6 +23,9 @@ import com.yuyan.imemodule.utils.KeyboardLoaderUtil
 import com.yuyan.inputmethod.CustomEngine
 import com.yuyan.inputmethod.util.LX17PinYinUtils
 import com.yuyan.inputmethod.util.T9PinYinUtils
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -90,6 +93,12 @@ class ImeController(val service: ImeService) {
      */
     private val _keyboardRevision = MutableStateFlow(0)
     val keyboardRevision: StateFlow<Int> = _keyboardRevision.asStateFlow()
+
+    /**
+     * 导航栏高度（insets 实时值）。与 [EnvironmentSingleton.systemNavbarWindowsBottom]
+     * 同步更新，但这里是 Compose 状态：底部栏/占位区的组合读到它才会随 insets 变化重组。
+     */
+    var navbarInset: Int by mutableIntStateOf(0)
 
     val dispatcher = KeyDispatcher(this)
 

@@ -3,9 +3,10 @@ package com.yuyan.imemodule.compose.keyboard
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,9 +24,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -71,16 +75,44 @@ fun T9PrefixColumn(
     }
     val isPrefixMode = prefixes.isNotEmpty()
     val listState = rememberLazyListState()
+    val radius = ThemeManager.prefs.keyRadius.getValue().toFloat()
+    val density = LocalDensity.current
+    // keyTextSmallSize 是像素值（与 KeyGrid.pxToSp 同一换算规则）。直接 `.sp` 会被
+    // density 再放大一次，符号比旧实现大出整个密度倍数
+    val symbolTextSize = remember(env.keyTextSmallSize, density) {
+        with(density) { (env.keyTextSmallSize / fontScale).toSp() }
+    }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    // 整条侧栏是一块键帽底色（等价旧实现的占位键背景），条目只画文本：
+    // 各自再画底色会和键盘键帽叠出双背景，把侧栏啃出毛边
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .then(
+                if (keyBorder) Modifier.background(keyBackground, RoundedCornerShape(radius))
+                else Modifier
+            )
+            // 旧实现整条侧栏是一个吃掉触摸的 RecyclerView：空白处按下不应落到
+            // 下面键盘的按键上（会误触上屏/高亮）。子项的 clickable 在 Main pass
+            // 先于这里处理，不受影响。
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        event.changes.forEach { it.consume() }
+                        if (event.changes.all { !it.pressed }) break
+                    }
+                }
+            },
+    ) {
         LazyColumn(
             state = listState,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+            modifier = Modifier.fillMaxSize(),
         ) {
             if (isPrefixMode) {
                 itemsIndexed(prefixes) { index, prefix ->
-                    SideCell(text = prefix, textColor = textColor, background = keyBackground, bordered = keyBorder) {
+                    SideCell(text = prefix, textColor = textColor, textSize = symbolTextSize) {
                         DevicesUtils.tryPlayKeyDown()
                         DevicesUtils.tryVibrate()
                         onSelectPrefix(index)
@@ -88,31 +120,27 @@ fun T9PrefixColumn(
                 }
             } else {
                 itemsIndexed(symbols) { index, symbol ->
-                    SideCell(
-                        text = symbol.symbolKey,
-                        textColor = textColor,
-                        background = keyBackground,
-                        bordered = keyBorder,
-                    ) {
+                    SideCell(text = symbol.symbolKey, textColor = textColor, textSize = symbolTextSize) {
                         DevicesUtils.tryPlayKeyDown()
                         DevicesUtils.tryVibrate()
                         onSymbol(symbol.symbolValue)
                     }
                 }
-            }
-        }
-        if (!isPrefixMode) {
-            // 底部入口：去「侧边符号」设置页
-            Box(
-                modifier = Modifier.fillMaxWidth().padding(4.dp).clickable { onAddSymbol() },
-                contentAlignment = Alignment.Center,
-            ) {
-                Image(
-                    painter = painterResource(R.drawable.ic_menu_setting),
-                    contentDescription = null,
-                    colorFilter = ColorFilter.tint(textColor),
-                    modifier = Modifier.size(22.dp),
-                )
+                // 「去设置」入口是列表末尾的 footer（旧 addFooterView 同语义）：
+                // 拉到列表末尾才看到，而不是固定在底部被滚动的符号盖住
+                item {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().clickable { onAddSymbol() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Image(
+                            painter = painterResource(R.drawable.ic_menu_setting),
+                            contentDescription = null,
+                            colorFilter = ColorFilter.tint(textColor),
+                            modifier = Modifier.padding(vertical = 8.dp).size(22.dp),
+                        )
+                    }
+                }
             }
         }
     }
@@ -122,27 +150,20 @@ fun T9PrefixColumn(
 private fun SideCell(
     text: String,
     textColor: Color,
-    background: Color,
-    bordered: Boolean,
+    textSize: TextUnit,
     onClick: () -> Unit,
 ) {
-    val env = remember { EnvironmentSingleton.instance }
-    val radius = ThemeManager.prefs.keyRadius.getValue().toFloat()
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() }
-            .then(
-                if (bordered) Modifier.background(background, RoundedCornerShape(radius))
-                else Modifier
-            ),
+            .clickable { onClick() },
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = text,
             color = textColor,
-            style = TextStyle(fontSize = env.keyTextSmallSize.sp, fontWeight = FontWeight.Medium),
-            modifier = Modifier.padding(vertical = 6.dp),
+            style = TextStyle(fontSize = textSize, fontWeight = FontWeight.Medium),
+            modifier = Modifier.padding(vertical = 12.dp),
         )
     }
 }
