@@ -40,7 +40,10 @@ import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -48,6 +51,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -69,7 +73,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -86,10 +89,11 @@ import kotlin.math.sqrt
  *   （百分比几何已由 `setSkbCoreSize` 换算成像素），这里只负责渲染与命中；
  * - **命中测试复用 [SoftKeyboard.mapToKey]**：把指针坐标换算回 skb 坐标系后直接调用，
  *   与旧实现判定逻辑完全一致，不引入第二套几何；
- * - **按压态 deferred read**：按压索引、弹层、气泡都只存在 `MutableState`，
- *   且在 `onDrawBehind` 内读取，按下只触发重绘、不触发重组；
- * - **文本测量进缓存块**：`TextLayoutResult` 在 `drawWithCache` 的缓存块里测量，
- *   几何/主题不变时不会重复 measure；`rememberTextMeasurer(cacheSize = 64)` 再做一层缓存。
+ * - **按压态 deferred read**：按压索引、弹层、气泡、动画进度都只存在 `MutableState`，
+ *   在 `drawWithCache` 的缓存块里读取，动画帧只重绘、不重组、不重跑键帽测量；
+ * - **键帽测量进 remember**：`KeyPainter`/`buildKeys`（文本测量 + 图标栅格化）按
+ *   键盘数据/主题/尺寸等输入 remember 缓存；`rememberTextMeasurer(cacheSize = 64)`
+ *   再做一层文本布局缓存。
  *
  * 手势顺序与旧 `BaseKeyboardView` 对齐：
  * 按下（气泡/震动/长按计时）→ 滑动（上滑小标点 / 左滑清空 / 空格移光标 / 弹层选字）
@@ -145,6 +149,34 @@ fun KeyGrid(
     // 键帽可切换状态（shift / enter）必须在绘制前落到 SoftKeyToggle 上，
     // 否则图标与文字仍是上一轮的状态
     applyToggleStates(keyboard, addPhrases)
+
+    // 键帽的几何/文字测量/图标栅格化是最重的一步，必须 remember：
+    // 涟漪等动画帧只需要重绘，不能每帧重跑 buildKeys（约 30 个键重排 +
+    // 每个图标键重新 Bitmap.createBitmap）。失效键 = buildKeys 实际读到的
+    // 全部输入：键盘数据、可切换状态版本、主题调色板、字号、密度、实测尺寸
+    // （实测尺寸决定 skb 坐标 → 视图坐标的缩放）。
+    val viewSize = remember { mutableStateOf(IntSize.Zero) }
+    val density = LocalDensity.current.density
+    val fontScale = LocalDensity.current.fontScale
+    val viewW = viewSize.value.width
+    val viewH = viewSize.value.height
+    val painter = remember(
+        keyboard, revision, addPhrases, theme, palette,
+        keyTextSizePx, smallTextSizePx, density, fontScale, viewW, viewH,
+    ) {
+        KeyPainter(
+            theme = theme,
+            palette = palette,
+            textMeasurer = textMeasurer,
+            scaleX = if (skbWidth > 0 && viewW > 0) viewW.toFloat() / skbWidth else 1f,
+            scaleY = if (skbHeight > 0 && viewH > 0) viewH.toFloat() / skbHeight else 1f,
+            keyTextSizePx = keyTextSizePx,
+            smallTextSizePx = smallTextSizePx,
+            density = density,
+            fontScale = fontScale,
+        )
+    }
+    val rendered = remember(painter, keyboard, keys) { painter.buildKeys(keyboard, keys) }
 
     val controller = remember(keyboard, skbWidth, skbHeight) {
         KeyTouchController(
@@ -202,71 +234,26 @@ fun KeyGrid(
 
     Spacer(
         modifier = modifier
+            .onSizeChanged { viewSize.value = it }
             .pointerInput(keyboard, skbWidth, skbHeight, handwriting, addPhrases, revision) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    if (!controller.onDown(down.position, size.width, size.height)) {
-                        // 按在空白区：手写模式开始采笔迹，否则等抬起后丢弃
-                        if (handwriting == null) {
-                            waitForUpOrCancellationCompat()
-                            return@awaitEachGesture
-                        }
-                        controller.onStrokeDown(down.position)
-                        var change: PointerInputChange? = down
-                        while (change != null) {
-                            val event = awaitPointerEvent()
-                            val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
-                            if (pointer.pressed) {
-                                controller.onStrokeMove(pointer.position)
-                                change = pointer
-                                // 手写采集期间不要把事件让给上层父容器（ImeService 窗口）
-                                pointer.consume()
-                            } else {
-                                controller.onStrokeUp(pointer.position)
-                                change = null
-                            }
-                        }
-                        if (controller.isStroking) controller.onStrokeUp(controller.lastStrokePoint)
-                        return@awaitEachGesture
-                    }
-
-                    var up: PointerInputChange? = null
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
-                        if (pointer.pressed) {
-                            controller.onMove(pointer.position)
-                        } else {
-                            up = pointer
-                            controller.onMove(pointer.position)
-                            break
-                        }
-                    }
-                    controller.onUp(up?.position ?: controller.lastPoint)
+                try {
+                    gestureLoop(controller, handwriting)
+                } finally {
+                    // 手势协程被取消（keyboard/revision 变化重启、组合销毁）时收不到
+                    // UP/CANCEL 事件，这里兜底复位按压状态并送出松手信号，
+                    // 否则涟漪会停在满 alpha、pressState 卡在按下的键上
+                    controller.onCancel()
                 }
             }
             .drawWithCache {
-                val scaleX = if (skbWidth > 0) size.width / skbWidth else 1f
-                val scaleY = if (skbHeight > 0) size.height / skbHeight else 1f
-                val painter = KeyPainter(
-                    theme = theme,
-                    palette = palette,
-                    textMeasurer = textMeasurer,
-                    scaleX = scaleX,
-                    scaleY = scaleY,
-                    keyTextSizePx = keyTextSizePx,
-                    smallTextSizePx = smallTextSizePx,
-                    density = density,
-                    fontScale = fontScale,
-                )
-                val rendered = painter.buildKeys(keyboard, keys)
                 val strokeColor = Color(theme.keyTextColor)
 
                 // 动画值与按压状态必须在**绘制块外**读取，作为参数传进 onDrawBehind：
                 // drawWithCache 的缓存块在 key 不变时不会重跑，若在 onDrawBehind 里
                 // 直接读 State，快照追踪建立在不稳定的作用域上，动画帧不触发重绘，
-                // 表现为「按下直接全灰，看不到扩散」。显式在组合作用域读值，
-                // 值变化才会让 drawWithCache 重新执行绘制块。
+                // 表现为「按下直接全灰，看不到扩散」。显式在缓存块里读值，
+                // 值变化才会重新执行绘制块。键帽几何/图标已 remember 在组合层，
+                // 这里每帧只剩读值和整块重绘，不再重跑 buildKeys。
                 val pressGrow = growAnim.value
                 val pressFade = fadeAnim.value
                 val balloonProgress = balloonAnim.value
@@ -296,6 +283,60 @@ fun KeyGrid(
                 }
             }
     )
+}
+
+/**
+ * 手势主循环：按下（气泡/震动/长按计时）→ 滑动（上滑小标点 / 左滑清空 / 空格移光标 /
+ * 弹层选字）→ 抬起（点击 或 弹层选中项 或 菜单动作），与旧 `BaseKeyboardView` 对齐。
+ *
+ * 该函数永不正常返回（awaitEachGesture 是无限循环），只会在 pointerInput 协程被取消
+ * 时抛 CancellationException；调用方的 finally 负责兜底复位。
+ */
+private suspend fun PointerInputScope.gestureLoop(
+    controller: KeyTouchController,
+    handwriting: HandwritingSession?,
+) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        if (!controller.onDown(down.position, size.width, size.height)) {
+            // 按在空白区：手写模式开始采笔迹，否则等抬起后丢弃
+            if (handwriting == null) {
+                waitForUpOrCancellationCompat()
+                return@awaitEachGesture
+            }
+            controller.onStrokeDown(down.position)
+            var change: PointerInputChange? = down
+            while (change != null) {
+                val event = awaitPointerEvent()
+                val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
+                if (pointer.pressed) {
+                    controller.onStrokeMove(pointer.position)
+                    change = pointer
+                    // 手写采集期间不要把事件让给上层父容器（ImeService 窗口）
+                    pointer.consume()
+                } else {
+                    controller.onStrokeUp(pointer.position)
+                    change = null
+                }
+            }
+            if (controller.isStroking) controller.onStrokeUp(controller.lastStrokePoint)
+            return@awaitEachGesture
+        }
+
+        var up: PointerInputChange? = null
+        while (true) {
+            val event = awaitPointerEvent()
+            val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
+            if (pointer.pressed) {
+                controller.onMove(pointer.position)
+            } else {
+                up = pointer
+                controller.onMove(pointer.position)
+                break
+            }
+        }
+        controller.onUp(up?.position ?: controller.lastPoint)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -478,10 +519,8 @@ private class KeyTouchController(
     var onKeyFeedback: (SoftKey) -> Unit = {}
     var onLongResult: (Pair<PopupMenuMode, String>) -> Unit = {}
     var onRepeat: (key: SoftKey, dx: Float, dy: Float, longPressed: Boolean) -> Unit = { _, _, _, _ -> }
-    /** 按压进度动效：true = 按下，false = 抬起；参数是按键索引（抬起时为 -1） */
+    /** 按压进度动效：true = 按下，false = 抬起（涟漪淡出完成的清零走 RippleAnimator.onFinished） */
     var onPressChanged: (Boolean) -> Unit = {}
-    /** 涟漪淡出完成（松手后驻留期结束），通知组合层清零 rippleIndex */
-    var onRippleFinished: () -> Unit = {}
     /** 弹层显隐：驱动入场动画 */
     var onPopupChanged: (Boolean) -> Unit = {}
     var handwriting: HandwritingSession? = null
@@ -674,7 +713,7 @@ private class KeyTouchController(
         val key = currentKey
         pressState.value = -1
         currentKey = null
-        // rippleIndex 保持不动：松手后涟漪驻留、淡出，由 onRippleFinished 清零
+        // rippleIndex 保持不动：松手后涟漪驻留、淡出，由 RippleAnimator.onFinished 回调清零
 
         val popup = popupState.value
         setPopup(null)
@@ -918,6 +957,8 @@ private class RenderedKey(
     val fill: Color?,
     /** 按下时从触点扩散的涟漪色（与底色保证有可见差异） */
     val ripple: Color,
+    /** 涟漪峰值不透明度：常规键取 Material pressedAlpha，扁平风格（无底色）再打 55 折 */
+    val ripplePeakAlpha: Float,
     val label: TextLayoutResult?,
     val labelOffset: Offset,
     val icon: ImageBitmap?,
@@ -1059,10 +1100,12 @@ private class KeyPainter(
             // 涟漪色就是「按下高亮」，但必须与键帽底色拉开差距：
             // 部分主题的按下色与键帽色几乎同色，扩散过程会完全不可见
             val ripple = when {
-                fill == null -> pressedColor.copy(alpha = 0.55f)
+                fill == null -> pressedColor
                 channelDistance(pressedColor, fill) < 0.05f -> lerp(fill, palette.onSurface, 0.14f)
                 else -> pressedColor
             }
+            // 峰值透明度按风格区分：扁平键的涟漪画在裸底色上，要淡一档才不突兀
+            val ripplePeakAlpha = if (fill == null) RIPPLE_ALPHA * 0.55f else RIPPLE_ALPHA
             val textStyle =
                 (if (isStandaloneLabel(displayLabel)) functionTextStyle else keyTextStyle).copy(color = keyTint)
 
@@ -1172,6 +1215,7 @@ private class KeyPainter(
                 corners = CornerRadius(modernKeyRadius(keyRadius * scaleX, width, height)),
                 fill = fill,
                 ripple = ripple,
+                ripplePeakAlpha = ripplePeakAlpha,
                 label = label,
                 labelOffset = labelOffset,
                 icon = icon,
@@ -1284,7 +1328,7 @@ private class KeyPainter(
                 val radius = farCorner * grow.coerceIn(0f, 1f)
                 // 低透明度：涟漪是「底色上的一层柔和提示」，不与字母争抢对比
                 drawCircle(
-                    color = r.ripple.copy(alpha = rippleFade * RIPPLE_ALPHA),
+                    color = r.ripple.copy(alpha = rippleFade * r.ripplePeakAlpha),
                     radius = radius,
                     center = center,
                 )
