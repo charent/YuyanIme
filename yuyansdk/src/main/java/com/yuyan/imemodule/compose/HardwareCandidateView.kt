@@ -15,12 +15,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.AbstractComposeView
 import androidx.compose.ui.platform.LocalDensity
-import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
+import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.yuyan.imemodule.compose.keyboard.CandidateBar
 import com.yuyan.imemodule.service.DictDecoder
@@ -36,18 +36,19 @@ import kotlin.math.max
  *
  * 外层刻意用 `FrameLayout` 而不是直接继承 `AbstractComposeView`：
  * 后者把 `onMeasure` 声明为 final，无法按「屏幕宽度 × 候选区高度」定尺寸。
+ *
+ * 三个 ViewTree owner 由 [ImeComposeRoot] 传入：`SavedStateRegistryOwnerImpl` 只能在
+ * 生命周期处于 INITIALIZED 时构造，而 `ImeService.onCreate()` 预热根视图时已把它推到
+ * CREATED，此处新建必然抛
+ * `IllegalStateException: Restarter must be created only during owner's initialization stage`。
  */
 class HardwareCandidateView(
     context: Context,
     private val controller: ImeController,
     private val imeLifecycleOwner: ImeLifecycleOwner,
+    private val viewModelStoreOwner: ViewModelStoreOwner,
+    private val savedStateRegistryOwner: SavedStateRegistryOwner,
 ) : FrameLayout(context) {
-
-    private val viewModelStoreOwner = object : ViewModelStoreOwner {
-        override val viewModelStore = ViewModelStore()
-    }
-
-    private val savedStateRegistryOwner = SavedStateRegistryOwnerImpl(imeLifecycleOwner)
 
     private val composeView = object : AbstractComposeView(context) {
         override val shouldCreateCompositionOnAttachedToWindow: Boolean
@@ -84,8 +85,23 @@ class HardwareCandidateView(
 
         init {
             setViewTreeLifecycleOwner(imeLifecycleOwner)
-            setViewTreeViewModelStoreOwner(viewModelStoreOwner)
-            setViewTreeSavedStateRegistryOwner(savedStateRegistryOwner)
+            setViewTreeViewModelStoreOwner(this@HardwareCandidateView.viewModelStoreOwner)
+            setViewTreeSavedStateRegistryOwner(this@HardwareCandidateView.savedStateRegistryOwner)
+        }
+
+        /**
+         * 与 [ImeComposeRoot] 同一理由：windowRecomposer 从 `contentChild` 向上找
+         * ViewTreeLifecycleOwner，必须先挂到窗口根上。物理键盘分支下 `setInputView`
+         * 可能整个被跳过，主根不会先挂 owner，候选栏必须自己兜住。
+         */
+        override fun onAttachedToWindow() {
+            installImeViewTreeOwners(
+                view = this,
+                lifecycleOwner = imeLifecycleOwner,
+                viewModelStoreOwner = this@HardwareCandidateView.viewModelStoreOwner,
+                savedStateRegistryOwner = this@HardwareCandidateView.savedStateRegistryOwner,
+            )
+            super.onAttachedToWindow()
         }
 
         /** 暴露给外层做销毁（`disposeComposition` 是 protected） */
@@ -136,7 +152,9 @@ class HardwareCandidateView(
 
     fun destroy() {
         composeView.disposeCompose()
-        viewModelStoreOwner.viewModelStore.clear()
+        // ViewModelStore 与 ImeComposeRoot 共用，不能在这里 clear：
+        // ImeService.onDestroy 的顺序是先 destroy 候选栏再销毁主根，
+        // 提前 clear 会让主组合在销毁前拿到空 store。
         removeAllViews()
     }
 

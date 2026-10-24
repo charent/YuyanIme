@@ -69,6 +69,8 @@ class ImeService : InputMethodService() {
             showVirtualKeyboardOnPhysicalKeyboard = value
             handleHardwareKeyboard()
             updateInputViewShown()
+            // 开启「物理键盘显示软键盘」后必须立即收起浮动候选栏，否则两条重叠
+            updateCandidatesViewShown(isHardwareKeyboard)
         }
 
     override fun onCreate() {
@@ -105,7 +107,15 @@ class ImeService : InputMethodService() {
     override fun onCreateCandidatesView(): View {
         hardwareCandidateView?.let { return it }
         val root = ensureComposeRoot()
-        return HardwareCandidateView(baseContext, root.controller, root.imeLifecycleOwner).also {
+        // owner 统一取自 ImeComposeRoot：SavedStateRegistryOwnerImpl 只能在生命周期
+        // 处于 INITIALIZED 时构造，而 onCreate 预热根视图时已把它推到 CREATED。
+        return HardwareCandidateView(
+            baseContext,
+            root.controller,
+            root.imeLifecycleOwner,
+            root.viewModelStoreOwner,
+            root.savedStateRegistryOwner,
+        ).also {
             hardwareCandidateView = it
             currentInputConnection?.requestCursorUpdates(InputConnection.CURSOR_UPDATE_MONITOR)
         }
@@ -122,7 +132,9 @@ class ImeService : InputMethodService() {
             YuyanEmojiCompat.setEditorInfo(editorInfo)
             InputModeSwitcher.requestInputWithSkb(editorInfo)
         }
-        if (isHardwareKeyboard) updateCandidatesViewShown(true)
+        // 浮动候选栏与软键盘互斥：软键盘自带候选栏，只有「有实体键盘且不显示软键盘」
+        // 时才需要浮动候选栏。每次输入开始都重新求值，覆盖偏好/配置变更后的状态。
+        updateCandidatesViewShown(isHardwareKeyboard)
     }
 
     override fun onStartInputView(editorInfo: EditorInfo, restarting: Boolean) {
@@ -162,6 +174,7 @@ class ImeService : InputMethodService() {
         CoroutineScope(Dispatchers.Main).launch {
             delay(200) //延时，解决获取屏幕尺寸不准确。
             handleHardwareKeyboard()
+            updateCandidatesViewShown(isHardwareKeyboard)
             EnvironmentSingleton.instance.initData(baseContext)
             KeyboardLoaderUtil.instance.clearKeyboardMap()
             KeyboardManager.instance.clearKeyboard()
@@ -225,6 +238,18 @@ class ImeService : InputMethodService() {
             layoutParams.height = targetHeight
             view.layoutParams = layoutParams
         }
+    }
+
+    /**
+     * 与 [setInputView] 同一原因：旋屏/深色切换等配置变更会走
+     * `resetStateForNewConfiguration()` → `initViews()` 重建整个窗口根视图，
+     * 而 [HardwareCandidateView] 是跨窗口复用的单例，仍挂在已废弃的旧
+     * candidatesArea 上，`setCandidatesView` 里的 addView 会抛
+     * "The specified child already has a parent"。
+     */
+    override fun setCandidatesView(view: View) {
+        (view.parent as? ViewGroup)?.removeView(view)
+        super.setCandidatesView(view)
     }
 
     override fun onEvaluateFullscreenMode(): Boolean = false //修复横屏之后输入框遮挡问题

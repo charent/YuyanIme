@@ -2,6 +2,7 @@ package com.yuyan.imemodule.compose
 
 import android.content.Context
 import android.util.AttributeSet
+import android.view.View
 import android.view.ViewGroup
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -9,6 +10,7 @@ import androidx.compose.ui.platform.AbstractComposeView
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
+import androidx.savedstate.SavedStateRegistryOwner
 // 这三个 owner 在 lifecycle 2.8+ / savedstate 1.3+ 起只以 View 扩展函数的形式提供
 // （旧的 ViewTreeXxxOwner 类已不再是可在 Kotlin 中 import 的声明），必须按扩展函数调用。
 import androidx.lifecycle.setViewTreeLifecycleOwner
@@ -41,11 +43,17 @@ class ImeComposeRoot @JvmOverloads constructor(
 
     val imeLifecycleOwner = ImeLifecycleOwner()
 
-    private val viewModelStoreOwner = object : ViewModelStoreOwner {
+    /**
+     * 与 [HardwareCandidateView] 共用：同一 IME 窗口只应有一个 ViewModelStore。
+     *
+     * 对外可见是刻意的——候选栏复用同一套 owner，避免为同一个窗口建两份
+     * `SavedStateRegistry`（那会让 ON_STOP/ON_DESTROY 被重复派发）。
+     */
+    val viewModelStoreOwner = object : ViewModelStoreOwner {
         override val viewModelStore = ViewModelStore()
     }
 
-    private val savedStateRegistryOwner = SavedStateRegistryOwnerImpl(imeLifecycleOwner)
+    val savedStateRegistryOwner = SavedStateRegistryOwnerImpl(imeLifecycleOwner)
 
     /** 输入派发 + UI 状态；整个服务生命周期内只有一个 */
     val controller = ImeController(service)
@@ -54,6 +62,28 @@ class ImeComposeRoot @JvmOverloads constructor(
         setViewTreeLifecycleOwner(imeLifecycleOwner)
         setViewTreeViewModelStoreOwner(viewModelStoreOwner)
         setViewTreeSavedStateRegistryOwner(savedStateRegistryOwner)
+    }
+
+    /**
+     * 把三个 ViewTree owner 挂到 IME 窗口的根视图上。
+     *
+     * Compose 的 `windowRecomposer` 先用 `contentChild` 定位内容子视图，再用
+     * `findViewTreeLifecycleOwner()` 从它**向上**遍历。IME 窗口布局
+     * （input_method.xml）里 `android.R.id.content` 的直接子级是
+     * `com.android.internal.R.id.parentPanel` 那个 LinearLayout，向上直到 DecorView
+     * 都没有 owner —— 只在 [init] 里挂在自己身上（子孙节点）是无效的。
+     *
+     * 必须在 `super.onAttachedToWindow()` 之前：后者会触发
+     * `ensureCompositionCreated()` → `windowRecomposer`。
+     */
+    override fun onAttachedToWindow() {
+        installImeViewTreeOwners(
+            view = this,
+            lifecycleOwner = imeLifecycleOwner,
+            viewModelStoreOwner = viewModelStoreOwner,
+            savedStateRegistryOwner = savedStateRegistryOwner,
+        )
+        super.onAttachedToWindow()
     }
 
     /**
@@ -118,4 +148,22 @@ class ImeComposeRoot @JvmOverloads constructor(
         viewModelStoreOwner.viewModelStore.clear()
         imeLifecycleOwner.destroy()
     }
+}
+
+/**
+ * 把 IME 的三个 ViewTree owner 挂到 [view] 所在窗口的根视图上。
+ *
+ * 三个 `findViewTreeXxxOwner()` 都是向上遍历的扩展函数，而 IME 窗口不是 Activity，
+ * 没有人往它的 DecorView 挂 owner，必须由我们挂。重复调用幂等（覆盖同一 tag）。
+ */
+internal fun installImeViewTreeOwners(
+    view: View,
+    lifecycleOwner: LifecycleOwner,
+    viewModelStoreOwner: ViewModelStoreOwner,
+    savedStateRegistryOwner: SavedStateRegistryOwner,
+) {
+    val root = view.rootView
+    root.setViewTreeLifecycleOwner(lifecycleOwner)
+    root.setViewTreeViewModelStoreOwner(viewModelStoreOwner)
+    root.setViewTreeSavedStateRegistryOwner(savedStateRegistryOwner)
 }
