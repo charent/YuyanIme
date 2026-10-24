@@ -7,7 +7,10 @@ import android.os.Looper
 import android.text.TextUtils
 import android.view.KeyEvent
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -62,6 +65,11 @@ import com.yuyan.imemodule.prefs.behavior.SkbStyleMode
 import com.yuyan.imemodule.service.DictDecoder
 import com.yuyan.imemodule.service.InputDispatcher
 import com.yuyan.imemodule.singleton.EnvironmentSingleton
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -106,9 +114,17 @@ fun KeyGrid(
     val palette = LocalImePalette.current
     val env = remember { EnvironmentSingleton.instance }
     val scope = rememberCoroutineScope()
-    // 按压进度、弹层入场进度都只在绘制阶段读取：按下一个键不触发重组
-    val pressAnim = remember(keyboard) { Animatable(0f) }
+    // 按压反馈拆成「扩散」与「驻留淡出」两个独立动画，复刻 Material ripple 的生命周期：
+    // - growAnim：按下 0→1 扩散；松手时**停住**（保留已扩散半径，不回退）
+    // - fadeAnim：按下→1；松手→0，只做透明度淡出（带驻留，不会瞬间消失）
+    // 之前用单一 pressAnim 0→1→0，松手时半径跟着缩回，「点得快还没铺满就恢复白色」。
+    val growAnim = remember(keyboard) { Animatable(0f) }
+    val fadeAnim = remember(keyboard) { Animatable(0f) }
+    val balloonAnim = remember(keyboard) { Animatable(0f) }
     val popupAnim = remember(keyboard) { Animatable(0f) }
+    // 涟漪的一次完整生命周期（按下→扩散→等待松手→淡出）由一个协程持有，
+    // 松手信号通过 CompletableDeferred 传回，保证「淡出等扩散结束」这一顺序。
+    val rippleCycle = remember(keyboard) { RippleCycle() }
     // LEFT_SYMBOL 只是侧边栏的占位键（旧实现的「站位」键，由 T9PrefixColumn 覆盖绘制）。
     // 这里不把它当普通键帽：若照常绘制，会和侧边栏叠出两层键底色，把相邻按键啃出毛边。
     // 注意 controller 内部的 keys 必须用同一份过滤结果，否则 pressState 索引会错位。
@@ -147,13 +163,30 @@ fun KeyGrid(
     controller.onRepeat = onRepeat
     controller.handwriting = handwriting
     controller.addPhrases = addPhrases
+    // 涟漪动画：与系统 Material ripple 同构（扩散 → 驻留 → 淡出）
+    val rippleAnimator = remember(keyboard) {
+        RippleAnimator(
+            scope = scope,
+            grow = growAnim,
+            fade = fadeAnim,
+            cycle = rippleCycle,
+        )
+    }
+    rippleAnimator.onFinished = {
+        // 淡出结束，清空涟漪作用键
+        controller.rippleIndex.value = -1
+    }
     // 动效由控制器回调驱动：手势层只管判定，进度动画留在组合层的 Animatable 里
     controller.onPressChanged = { down ->
-        scope.launch {
-            pressAnim.animateTo(
-                targetValue = if (down) 1f else 0f,
-                animationSpec = if (down) PressDownSpec else PressUpSpec,
-            )
+        if (down) {
+            rippleAnimator.onPress(controller.rippleIndex.value)
+            scope.launch {
+                balloonAnim.snapTo(0f)
+                balloonAnim.animateTo(1f, BalloonInSpec)
+            }
+        } else {
+            rippleAnimator.onRelease()
+            scope.launch { balloonAnim.snapTo(0f) }
         }
     }
     controller.onPopupChanged = { visible ->
@@ -234,8 +267,10 @@ fun KeyGrid(
                 // 直接读 State，快照追踪建立在不稳定的作用域上，动画帧不触发重绘，
                 // 表现为「按下直接全灰，看不到扩散」。显式在组合作用域读值，
                 // 值变化才会让 drawWithCache 重新执行绘制块。
-                val pressProgress = pressAnim.value
-                val pressedIndex = pressState.value
+                val pressGrow = growAnim.value
+                val pressFade = fadeAnim.value
+                val balloonProgress = balloonAnim.value
+                val rippleIdx = controller.rippleIndex.value
                 val pressOrigin = controller.pressPoint.value
 
                 onDrawBehind {
@@ -243,8 +278,9 @@ fun KeyGrid(
                         rendered.forEachIndexed { index, r ->
                             drawKey(
                                 r = r,
-                                pressed = pressedIndex == index,
-                                progress = pressProgress,
+                                rippling = rippleIdx == index,
+                                grow = pressGrow,
+                                fade = pressFade,
                                 origin = pressOrigin,
                             )
                         }
@@ -254,7 +290,7 @@ fun KeyGrid(
                         drawHandwritingStrokes(session.allStrokes(), session::strokeWidthFor, strokeColor)
                     }
                     with(painter) {
-                        balloonState.value?.let { drawBalloon(it, pressProgress) }
+                        balloonState.value?.let { drawBalloon(it, balloonProgress) }
                         popupState.value?.let { drawPopup(it, popupAnim.value) }
                     }
                 }
@@ -266,15 +302,39 @@ fun KeyGrid(
 // 动效
 // ---------------------------------------------------------------------------
 
-/** 按下：用固定的时长曲线而非高刚度 spring，让涟漪扩散过程可被感知（约 110ms 盖满） */
-private val PressDownSpec = tween<Float>(durationMillis = 130, easing = FastOutSlowInEasing)
-private val PressUpSpec = tween<Float>(durationMillis = 90, easing = FastOutSlowInEasing)
+/**
+ * 键帽按下涟漪的曲线与时长，**逐项复刻系统 `material.ripple.RippleAnimation`**：
+ * - 透明度淡入：`tween(75ms, LinearEasing)` —— 系统里 alpha 极快到位；
+ * - 半径扩散：`tween(225ms, FastOutSlowInEasing)` —— 系统里半径用 FastOutSlowIn；
+ * - 淡出：`tween(150ms, LinearEasing)` —— 松手后透明度缓慢回落。
+ *
+ * 关键在于**顺序**而非单项时长：系统的 `fadeOut()` 要等半径动画结束（`finishedFadingIn`）
+ * 才开始，所以快速点击时涟漪仍会完整扩散一遍再淡出。
+ * 整体时长 = 225ms 扩散 + 150ms 淡出 ≈ 375ms，与系统完全一致。
+ */
+private val PressDownSpec = tween<Float>(
+    durationMillis = 225,
+    easing = FastOutSlowInEasing,
+)
+private val PressUpSpec = tween<Float>(durationMillis = 150, easing = LinearEasing)
+
+/** 涟漪 alpha 淡入：系统 `RippleAnimation.fadeIn` 是 `tween(75ms, LinearEasing)` */
+private val AlphaInSpec = tween<Float>(durationMillis = 75, easing = LinearEasing)
 
 /** 长按弹层入场：略慢的收敛，让弹层有「浮出来」的重量感 */
 private val PopupInSpec = spring<Float>(dampingRatio = 0.70f, stiffness = Spring.StiffnessMediumLow)
 
+/** 按键气泡（短按预览）淡入：比涟漪更轻快，一按下就浮现 */
+private val BalloonInSpec = tween<Float>(durationMillis = 120, easing = LinearOutSlowInEasing)
+
 /** 键帽投影基准不透明度 */
 private const val KEY_SHADOW_ALPHA = 0.16f
+
+/**
+ * 按下涟漪的峰值不透明度，取 Material 默认 `RippleAlpha.pressedAlpha`（约 0.12）。
+ * 系统 ripple 是一层极淡的灰，不会盖住字母；之前取 0.28 太浓，和字母叠在一起看不清。
+ */
+private const val RIPPLE_ALPHA = 0.12f
 
 // ---------------------------------------------------------------------------
 // 可切换状态
@@ -316,6 +376,72 @@ internal data class KeyPopup(
     val clearMenu: Boolean = false,
 )
 
+/**
+ * 一次涟漪生命周期的运行时状态。
+ *
+ * Material ripple 的关键语义：**淡出必须等淡入（半径扩散）彻底结束后才开始**。
+ * 快速点击时，涟漪依然会完整扩散一遍再淡出——这正是「点一下也能看到一圈淡色
+ * 铺开、再缓缓消失」的手感来源。若松手就立刻淡出，短按几乎看不见扩散。
+ *
+ * [released] 把「松手」事件送回动画协程：协程先跑完扩散，再等它完成，最后才淡出。
+ */
+private class RippleCycle {
+    /** 当前周期的协程：下一次按下会取消它，避免旧周期悬挂 */
+    var job: Job? = null
+    /** 本周期的松手信号 */
+    var released: CompletableDeferred<Unit>? = null
+}
+
+/**
+ * 键帽按下的涟漪动画。
+ *
+ * 复刻系统 `androidx.compose.material.ripple.RippleAnimation` 的时序：
+ * - **淡入**：alpha 75ms 线性到峰值 + 半径 225ms FastOutSlowIn 扩散，两者并行；
+ * - **驻留**：alpha 到峰值后保持，直到松手信号到达；
+ * - **淡出**：松手后 alpha 150ms 线性回落，半径保持不动。
+ *
+ * 系统的 `RippleAnimation.fadeOut()` 只在 `finishedFadingIn`（即半径动画结束）
+ * 之后才启动，所以**快速点击也会完整扩散一遍再淡出**——这是「点一下也能看到
+ * 一圈淡色铺开」的关键，也是与工具栏按钮手感一致的根源。
+ *
+ * 整体时长 = 扩散 225ms + 淡出 150ms ≈ 375ms，与系统完全相同。
+ */
+private class RippleAnimator(
+    private val scope: CoroutineScope,
+    private val grow: Animatable<Float, AnimationVector1D>,
+    private val fade: Animatable<Float, AnimationVector1D>,
+    private val cycle: RippleCycle,
+) {
+    /** 淡出结束回调（每次组合刷新，避免 remember 捕获旧 controller） */
+    var onFinished: () -> Unit = {}
+
+    fun onPress(keyIndex: Int) {
+        // 取消上一轮（快速连按时旧周期还在等待松手信号）
+        cycle.job?.cancel()
+        val released = CompletableDeferred<Unit>()
+        cycle.released = released
+        cycle.job = scope.launch {
+            try {
+                // 淡入：alpha 与半径并行
+                launch { fade.animateTo(1f, AlphaInSpec) }
+                grow.snapTo(0f)
+                grow.animateTo(1f, PressDownSpec)
+                // 等松手；期间 alpha 已到峰值并驻留（系统 ripple 的 finishedFadingIn 语义）
+                released.await()
+                // 淡出：半径保持，alpha 回落
+                fade.animateTo(0f, PressUpSpec)
+                onFinished()
+            } catch (_: CancellationException) {
+                // 被下一次按下取消，交给新周期接管
+            }
+        }
+    }
+
+    fun onRelease() {
+        cycle.released?.complete(Unit)
+    }
+}
+
 /** 按键气泡（短按预览） */
 internal data class KeyBalloon(
     val text: String,
@@ -338,12 +464,24 @@ private class KeyTouchController(
     /** 按压点（视图坐标）：键帽的按下高亮从这一点向外扩散 */
     val pressPoint: MutableState<Offset> = mutableStateOf(Offset.Zero)
 
+    /**
+     * 涟漪作用的键索引（-1 = 无）。
+     *
+     * 与 [pressState] 不同：pressState 是「手指正按着哪个键」，松手立即归位；
+     * rippleIndex 是「涟漪正在哪个键上」，按下时设定、松手后**保持**，
+     * 直到淡出动画结束才清零。这样涟漪只画在按下的那一个键上（而非所有键），
+     * 又能让松手后的淡出完整呈现。
+     */
+    val rippleIndex: MutableState<Int> = mutableStateOf(-1)
+
     var onKeyTap: (SoftKey) -> Unit = {}
     var onKeyFeedback: (SoftKey) -> Unit = {}
     var onLongResult: (Pair<PopupMenuMode, String>) -> Unit = {}
     var onRepeat: (key: SoftKey, dx: Float, dy: Float, longPressed: Boolean) -> Unit = { _, _, _, _ -> }
-    /** 按压进度动效：true = 按下，false = 抬起 */
+    /** 按压进度动效：true = 按下，false = 抬起；参数是按键索引（抬起时为 -1） */
     var onPressChanged: (Boolean) -> Unit = {}
+    /** 涟漪淡出完成（松手后驻留期结束），通知组合层清零 rippleIndex */
+    var onRippleFinished: () -> Unit = {}
     /** 弹层显隐：驱动入场动画 */
     var onPopupChanged: (Boolean) -> Unit = {}
     var handwriting: HandwritingSession? = null
@@ -438,6 +576,7 @@ private class KeyTouchController(
             return false
         }
         pressState.value = keys.indexOfFirst { it === key }
+        rippleIndex.value = pressState.value
         pressPoint.value = position
         onPressChanged(true)
         onKeyFeedback(key)
@@ -535,6 +674,7 @@ private class KeyTouchController(
         val key = currentKey
         pressState.value = -1
         currentKey = null
+        // rippleIndex 保持不动：松手后涟漪驻留、淡出，由 onRippleFinished 清零
 
         val popup = popupState.value
         setPopup(null)
@@ -1052,16 +1192,20 @@ private class KeyPainter(
     /**
      * 画一个键帽。
      *
-     * [progress] 是按下进度（0 = 抬起，1 = 完全按下），由组合层的 spring 驱动；
-     * [origin] 是按下时手指落点。按下反馈是一个从落点向外扩散的圆（涟漪），
-     * 圆被键帽圆角矩形裁剪，扩散到盖满整个键帽即收敛为「按下高亮」态。
+     * [rippling] 表示「涟漪是否作用在这个键上」（由 rippleIndex 决定，松手后仍保持）；
+     * [grow] 是涟漪扩散进度（0 = 触点，1 = 盖满键帽）；[fade] 是透明度（1 = 按下，
+     * 0 = 淡出完成）；[origin] 是按下时手指落点。
      *
-     * 故意**不做整键缩放**：键帽缩小会让整块键盘的视觉重心一起下沉，
-     * 快速连续打字时特别明显（用户反馈「定位晕眩」）；涟漪是局部反馈，
-     * 不牵动周边，也和工具栏图标的 ripple 语言一致。
+     * 与 Material ripple 同构的生命周期：按下时半径从落点向外扩散、透明度快速淡入；
+     * 松手后半径快速铺满并驻留，只把透明度淡出。短按也能看到涟漪铺满再淡出。
      */
-    fun DrawScope.drawKey(r: RenderedKey, pressed: Boolean, progress: Float, origin: Offset) {
-        val p = if (pressed) progress.coerceIn(0f, 1f) else 0f
+    fun DrawScope.drawKey(
+        r: RenderedKey,
+        rippling: Boolean,
+        grow: Float,
+        fade: Float,
+        origin: Offset,
+    ) {
         val width = r.right - r.left
         val height = r.bottom - r.top
 
@@ -1108,8 +1252,15 @@ private class KeyPainter(
             }
         }
 
-        // 按下涟漪：从落点扩散的实心圆，裁剪在键帽形状内
-        if (p > 0.005f) {            val path = Path().apply {
+        // 按下涟漪：从落点扩散的实心圆，裁剪在键帽形状内。
+        // 与 Material ripple 同构：半径扩散（grow）+ 透明度淡入/淡出（fade）两层叠加。
+        //
+        // 绘制条件：`rippling`（这个键是当前涟漪键，松手后仍保持）+ `fade > 0`。
+        // 不再用 pressState（松手立即归零），否则涟漪只画一瞬就整体消失；
+        // 也不再「只看 fade」（否则所有键都画同一层涟漪）。
+        val rippleFade = fade.coerceIn(0f, 1f)
+        if (rippling && rippleFade > 0.005f) {
+            val path = Path().apply {
                 addRoundRect(
                     RoundRect(
                         rect = Rect(r.left, r.top, r.right, r.bottom),
@@ -1130,10 +1281,11 @@ private class KeyPainter(
                     max((center - Offset(r.left, r.top)).getDistance(), (center - Offset(r.right, r.top)).getDistance()),
                     max((center - Offset(r.left, r.bottom)).getDistance(), (center - Offset(r.right, r.bottom)).getDistance()),
                 )
-                // 1.6 倍速率：约 60% 进度就盖满键帽，剩下的进度只是颜色的完全饱和
+                val radius = farCorner * grow.coerceIn(0f, 1f)
+                // 低透明度：涟漪是「底色上的一层柔和提示」，不与字母争抢对比
                 drawCircle(
-                    color = r.ripple,
-                    radius = farCorner * (p * 1.6f).coerceAtMost(1f),
+                    color = r.ripple.copy(alpha = rippleFade * RIPPLE_ALPHA),
+                    radius = radius,
                     center = center,
                 )
             }
