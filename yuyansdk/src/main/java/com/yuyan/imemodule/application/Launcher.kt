@@ -2,10 +2,8 @@ package com.yuyan.imemodule.application
 
 import android.annotation.SuppressLint
 import android.content.Context
-import androidx.appcompat.app.AppCompatDelegate
 import com.yuyan.imemodule.data.emojicon.YuyanEmojiCompat
 import com.yuyan.imemodule.data.theme.ThemeManager
-import com.yuyan.imemodule.data.theme.ThemeManager.prefs
 import com.yuyan.imemodule.database.DataBaseKT
 import com.yuyan.imemodule.manager.UserDictManager
 import com.yuyan.imemodule.prefs.AppPrefs
@@ -52,11 +50,8 @@ class Launcher {
             // 不新增任何资源，判定依据与引擎出候选完全一致
             EngineLexicon.prepare(CustomConstant.RIME_DICT_PATH + "/build/pinyin.table.bin")
             YuyanEmojiCompat.init(context)
-            //初始化键盘主题
-            val isFollowSystemDayNight = prefs.followSystemDayNightTheme.getValue()
-            if (isFollowSystemDayNight) {
-                AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
-            }
+            // 深色模式跟随系统是平台默认行为：界面全部是 Compose + values-night，
+            // 旧框架的 setDefaultNightMode 调用在没有对应 Activity 基类后本就是空操作。
         }
     }
 

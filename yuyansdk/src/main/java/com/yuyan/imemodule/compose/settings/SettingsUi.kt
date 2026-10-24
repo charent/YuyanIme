@@ -53,7 +53,7 @@ import kotlin.math.roundToInt
 /**
  * 设置页统一主题。
  *
- * 设置界面跟随系统深色模式（与旧 AppCompat DayNight 主题一致），
+ * 设置界面跟随系统深色模式（与旧的 DayNight 主题一致），
  * 不用键盘主题——那套颜色是为键盘绘制的，直接用在文字界面上对比度不可控。
  */
 @Composable

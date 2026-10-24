@@ -61,9 +61,8 @@ android {
     }
 
     buildFeatures {
-        viewBinding = true
         buildConfig = true
-        // Compose 迁移期与旧 View 体系并存，Phase 5 才移除 viewBinding
+        // 界面全部是 Compose，没有 ViewBinding 使用方
         compose = true
     }
 
@@ -97,16 +96,11 @@ android {
 
 dependencies {
     implementation fileTree(dir: 'libs', include: ['*.aar', '*.jar'], exclude: [])
-    // appcompat 暂时保留：Theme.AppTheme / Theme.CropActivityTheme 与裁剪页（CropImageActivity）
-    // 仍是 AppCompat 体系，去掉会连带改主题与裁剪流程，风险大于收益（见方案 §9 偏差记录）。
-    implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'androidx.emoji2:emoji2:1.5.0'
     implementation "org.jetbrains.kotlin:kotlin-stdlib:2.1.20"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0"
     implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3'
-    // styledColor（自定义主题页取主题色）
-    implementation 'com.louiscad.splitties:splitties-resources:3.0.0'
     implementation 'androidx.exifinterface:exifinterface:1.3.7'
     implementation "androidx.room:room-runtime:2.6.1"
     ksp "androidx.room:room-compiler:2.6.1"
